@@ -1,0 +1,11 @@
+/target
+Cargo.lock
+*.img
+*.sqfs
+*audit*
+.history
+
+# Generated fixtures: oracle tests build SquashFS images into a tempdir,
+# but guard against any stray image artifacts landing in the tree.
+tests/fixtures/*.img
+tests/fixtures/*.sqfs
