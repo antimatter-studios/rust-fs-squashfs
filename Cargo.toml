@@ -44,6 +44,10 @@ ruzstd = "0.8"
 [dev-dependencies]
 # Integration tests spawn `mksquashfs` to build fixtures into a tempdir.
 tempfile = "3"
+# CLI integration tests use `Command::cargo_bin("lssquashfs")` to spawn the
+# freshly-built binary. MIT/Apache-2.0; no proc-macro deps that would pull
+# GPL'd code into the test build.
+assert_cmd = "2"
 
 [profile.release]
 lto = true

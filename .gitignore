@@ -9,3 +9,12 @@ Cargo.lock
 # but guard against any stray image artifacts landing in the tree.
 tests/fixtures/*.img
 tests/fixtures/*.sqfs
+
+# Committed offline fixtures: a tiny canonical gzip image (+ its meta) so
+# `cargo test` can read a real SquashFS image even on a host without
+# squashfs-tools installed. These are intentionally tracked; the blanket
+# *.sqfs rule above would otherwise ignore them. The per-compressor +
+# feature variants (squashfs-{xz,lz4,zstd,lzo,features}.sqfs) stay ignored
+# — regenerate them with scripts/build-squashfs-feature-images.sh.
+!test-disks/squashfs-basic.sqfs
+!test-disks/*.meta.txt

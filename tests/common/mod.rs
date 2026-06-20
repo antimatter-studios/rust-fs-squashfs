@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use fs_core::BlockRead;
+use fs_core::{BlockDevice, BlockRead};
 use fs_squashfs::Filesystem;
 
 /// In-memory `BlockRead` impl backed by a `Vec<u8>`. Owned via
@@ -53,6 +53,12 @@ impl BlockRead for MemDev {
         self.0.lock().unwrap().len() as u64
     }
 }
+
+// SquashFS is read-only, so a `BlockDevice` impl that inherits the trait's
+// default (write returns `Err(ReadOnly)`) is all the fs_core handle path
+// needs. This lets a test wrap raw bytes into an `FsCoreDevice` handle and
+// drive `fs_squashfs_mount_with_fs_core_device` / the slice-mount path.
+impl BlockDevice for MemDev {}
 
 /// Open a SquashFS image given as raw bytes. Panics on parse failure --
 /// integration tests are expected to feed valid images here.
@@ -240,4 +246,45 @@ pub fn sorted_dir_names(fs: &Filesystem, path: &str) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+// ---- committed offline fixtures ----------------------------------------
+
+/// Directory holding the committed test-disk fixtures.
+pub fn test_disks_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("test-disks")
+}
+
+/// Path to the committed tiny canonical gzip fixture
+/// (`test-disks/squashfs-basic.sqfs`). Always present in a checkout — no
+/// squashfs-tools required to read it. Built by
+/// `scripts/build-squashfs-feature-images.sh basic`.
+pub fn basic_fixture_path() -> PathBuf {
+    test_disks_dir().join("squashfs-basic.sqfs")
+}
+
+/// `pattern(20000)` — the exact bytes of `/sub/deep/big.bin` in the
+/// committed basic fixture (the build script's Python LCG is byte-for-byte
+/// identical to [`pattern`]).
+pub fn basic_big_bin() -> Vec<u8> {
+    pattern(20000)
+}
+
+// ---- fs_core handle plumbing (for the FFI mount paths) -----------------
+
+/// Wrap raw image bytes in an `FsCoreDevice` handle (read-only). The
+/// returned pointer is owned by the caller and must be freed with
+/// `fs_core::ffi::fs_core_device_close`.
+pub fn fs_core_handle(bytes: Vec<u8>) -> *mut fs_core::ffi::FsCoreDevice {
+    let dev: Arc<dyn BlockDevice> = Arc::new(MemDev::new(bytes));
+    fs_core::ffi::FsCoreDevice::into_handle(dev)
+}
+
+/// Embed `image` at byte offset `pad` inside a larger zero-padded buffer
+/// (simulating a partition inside a container image) and return the
+/// padded bytes plus the offset — the inputs to the slice-mount path.
+pub fn embed_at_offset(image: &[u8], pad: usize) -> (Vec<u8>, u64) {
+    let mut buf = vec![0u8; pad + image.len()];
+    buf[pad..].copy_from_slice(image);
+    (buf, pad as u64)
 }

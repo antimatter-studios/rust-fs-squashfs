@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# Build SquashFS test-disk fixtures with `mksquashfs` (squashfs-tools).
+#
+# Why no VM: unlike ext4/ntfs, the squashfs tooling (mksquashfs /
+# unsquashfs) is cross-platform — it runs natively on macOS (brew install
+# squashfs-tools) and Linux (apt-get install squashfs-tools). So a single
+# shell script drives the whole fixture build on any host; no qemu, no
+# loop-mount, no privileged steps.
+#
+# Output: a set of *.sqfs images under test-disks/, each paired with a
+# *.meta.txt describing its contents + the features it exercises. A small
+# canonical gzip fixture (squashfs-basic.sqfs) is committed to the repo so
+# `cargo test` can read a real image even on a host without squashfs-tools
+# installed; the per-compressor + feature variants are regenerated on
+# demand and are git-ignored.
+#
+# Usage:
+#   scripts/build-squashfs-feature-images.sh            # build everything
+#   scripts/build-squashfs-feature-images.sh basic gzip # build named ones
+#
+# Reproducibility: every image is built with a fixed timestamp
+# (-all-time / -mkfs-time) and -no-xattrs so re-runs are byte-stable
+# (modulo squashfs-tools version differences).
+#
+# Requires: mksquashfs (squashfs-tools >= 4.x).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUT_DIR="$REPO_ROOT/test-disks"
+mkdir -p "$OUT_DIR"
+
+if ! command -v mksquashfs >/dev/null 2>&1; then
+    echo "error: mksquashfs not found on PATH." >&2
+    echo "  macOS: brew install squashfs-tools" >&2
+    echo "  Debian/Ubuntu: sudo apt-get install -y squashfs-tools" >&2
+    exit 1
+fi
+
+# Fixed epoch for reproducible builds (2021-01-01T00:00:00Z).
+FIXED_TIME=1609459200
+
+# Deterministic pseudo-random byte stream. Mirrors the `pattern()` helper
+# in tests/common/mod.rs (LCG: x = x*1103515245 + 12345, emit byte 16),
+# so a fixture file's bytes match what the Rust tests expect.
+emit_pattern() {
+    local len="$1" out="$2"
+    python3 - "$len" "$out" <<'PY'
+import sys
+n = int(sys.argv[1]); out = sys.argv[2]
+x = 0x12345678
+b = bytearray(n)
+for i in range(n):
+    x = (x * 1103515245 + 12345) & 0xFFFFFFFF
+    b[i] = (x >> 16) & 0xFF
+with open(out, "wb") as f:
+    f.write(b)
+PY
+}
+
+# mksquashfs <src_dir> <out.sqfs> [extra args...]
+run_mksquashfs() {
+    local src="$1" out="$2"; shift 2
+    rm -f "$out"
+    mksquashfs "$src" "$out" \
+        -noappend -no-progress -no-xattrs \
+        -all-time "$FIXED_TIME" -mkfs-time "$FIXED_TIME" \
+        "$@" >/dev/null
+}
+
+# Stage the canonical fixture tree under $1. Shared by every compressor so
+# the cross-compressor read-back asserts identical content. Built with a
+# small (4 KiB) data block so the "big" file spans multiple blocks while
+# the whole image stays tiny enough to commit.
+#   /hello.txt          small file (lands in a tail fragment)
+#   /sub/note.md        nested small file
+#   /sub/deep/big.bin   20000 bytes pseudo-random -> multiple 4 KiB blocks + tail
+#   /empty.txt          zero-length file
+#   /link               symlink -> hello.txt
+stage_canonical_tree() {
+    local src="$1"
+    rm -rf "$src"; mkdir -p "$src/sub/deep"
+    printf 'hi\n' > "$src/hello.txt"
+    printf '# note\nsome words here\n' > "$src/sub/note.md"
+    emit_pattern 20000 "$src/sub/deep/big.bin"
+    : > "$src/empty.txt"
+    ln -s hello.txt "$src/link"
+}
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+build_basic() {
+    echo "==> squashfs-basic.sqfs (gzip, canonical tree) [COMMITTED]"
+    local src="$WORK/basic"
+    stage_canonical_tree "$src"
+    # -b 4096: smallest legal block so big.bin spans several blocks while
+    # the committed image stays a few KiB.
+    run_mksquashfs "$src" "$OUT_DIR/squashfs-basic.sqfs" -comp gzip -b 4096
+    cat > "$OUT_DIR/squashfs-basic.meta.txt" <<EOF
+image: squashfs-basic.sqfs
+compressor: gzip
+block_size: 4096
+committed: yes (read by non-ignored cargo tests)
+contents:
+  /hello.txt          — "hi\\n" (3 bytes; tail fragment)
+  /sub/note.md        — "# note\\nsome words here\\n" (nested small file)
+  /sub/deep/big.bin   — 20000 bytes deterministic LCG pattern (multi-block + tail)
+  /empty.txt          — zero-length file
+  /link               — symlink -> hello.txt
+test_targets:
+  - root listing == [empty.txt, hello.txt, link, sub]
+  - read /hello.txt, /sub/note.md exact bytes
+  - read /sub/deep/big.bin full + mid-file offset; matches LCG pattern
+  - readlink /link == "hello.txt"
+  - stat /empty.txt size == 0
+EOF
+}
+
+# Per-compressor variants of the canonical tree (git-ignored; regenerated).
+build_comp() {
+    local comp="$1"
+    echo "==> squashfs-$comp.sqfs ($comp, canonical tree)"
+    local src="$WORK/$comp"
+    stage_canonical_tree "$src"
+    run_mksquashfs "$src" "$OUT_DIR/squashfs-$comp.sqfs" -comp "$comp"
+    cat > "$OUT_DIR/squashfs-$comp.meta.txt" <<EOF
+image: squashfs-$comp.sqfs
+compressor: $comp
+contents: canonical tree (see squashfs-basic.meta.txt)
+committed: no (regenerated by scripts/build-squashfs-feature-images.sh)
+EOF
+}
+
+# A deeper feature image: deep dirs, long names, many small files, all
+# file kinds the reader classifies. git-ignored.
+build_features() {
+    echo "==> squashfs-features.sqfs (gzip, deep tree + edge cases)"
+    local src="$WORK/features"
+    rm -rf "$src"
+    mkdir -p "$src/a/b/c/d/e/f"
+    printf 'deeply nested\n' > "$src/a/b/c/d/e/f/leaf.txt"
+    # Long (255-byte) filename.
+    local long; long="$(printf 'x%.0s' $(seq 1 255))"
+    printf 'long name\n' > "$src/$long"
+    # Many small files in one directory.
+    mkdir -p "$src/many"
+    local i
+    for i in $(seq 1 500); do printf 'f%d\n' "$i" > "$src/many/file_$i"; done
+    # Empty directory.
+    mkdir -p "$src/empty_dir"
+    # A fragment-packed small file + a block-aligned file.
+    printf 'fragment\n' > "$src/frag.txt"
+    emit_pattern 131072 "$src/exactly_one_block.bin"
+    run_mksquashfs "$src" "$OUT_DIR/squashfs-features.sqfs" -comp gzip
+    cat > "$OUT_DIR/squashfs-features.meta.txt" <<EOF
+image: squashfs-features.sqfs
+compressor: gzip
+committed: no (regenerated by scripts/build-squashfs-feature-images.sh)
+contents:
+  /a/b/c/d/e/f/leaf.txt        — deep directory chain
+  /<255 x's>                   — max-length filename
+  /many/file_1 .. file_500     — many entries in one directory
+  /empty_dir/                  — empty directory
+  /frag.txt                    — fragment-packed small file
+  /exactly_one_block.bin       — 131072 bytes (exactly one default block)
+EOF
+}
+
+TARGETS=("$@")
+if [ ${#TARGETS[@]} -eq 0 ]; then
+    TARGETS=(basic gzip xz lz4 zstd lzo features)
+fi
+
+for t in "${TARGETS[@]}"; do
+    case "$t" in
+        basic)    build_basic ;;
+        features) build_features ;;
+        gzip|xz|lz4|zstd|lzo) build_comp "$t" ;;
+        *) echo "unknown target: $t" >&2; exit 2 ;;
+    esac
+done
+
+echo
+echo "Done. Images under: $OUT_DIR"
+ls -la "$OUT_DIR"/*.sqfs 2>/dev/null || true
