@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # The crate has a path dep on am-fs-core (../rust-fs-core).
+      # Clone the sibling repo alongside so cargo can resolve it.
+      # Anonymous HTTPS clone — rust-fs-core is public.
+      - name: Clone sibling rust-fs-core
+        run: git clone --depth 1 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # squashfs-tools provides mksquashfs / unsquashfs — the oracle
+      # binaries the #[ignore]-gated oracle / large-file / stress tests
+      # shell out to. Unlike ext4/ntfs there's no VM: the tooling is
+      # cross-platform and runs natively on the Linux runner.
+      - name: Install squashfs-tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq squashfs-tools
+          mksquashfs -version | head -1
+          unsquashfs -version | head -1
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+      # Oracle tests are #[ignore]-gated so a fresh checkout without
+      # squashfs-tools still passes `cargo test`. CI installed the oracle
+      # above, so we opt them in here.
+      - run: cargo test --release -- --ignored
+
+  # Validate the reader + lssquashfs against the kernel's own SquashFS
+  # driver. We build an image with mksquashfs, loop-mount it with the
+  # in-kernel squashfs driver, and confirm three readers agree on the
+  # tree: (a) the kernel mount, (b) unsquashfs (upstream extractor), and
+  # (c) our pure-Rust driver via lssquashfs. Triple-agreement is the
+  # strongest "do we read SquashFS the way the world reads it" signal,
+  # and it runs on every PR + push so a read-path regression is caught
+  # before a tag ships.
+  validate-kernel-mount:
+    name: validate against kernel squashfs driver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone sibling rust-fs-core
+        run: git clone --depth 1 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install squashfs-tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq squashfs-tools
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-kmount-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build lssquashfs
+        run: cargo build --release --bin lssquashfs
+      - name: Build a source tree and mksquashfs it (every compressor)
+        run: |
+          set -euo pipefail
+          src=/tmp/src
+          mkdir -p "$src/sub/nested"
+          echo "hello world" > "$src/file.txt"
+          echo "another" > "$src/sub/another.txt"
+          # ~1.5 MiB pseudo-random payload so it spans many data blocks
+          # plus a tail fragment (exercises the block + fragment paths).
+          head -c 1572864 /dev/urandom > "$src/sub/nested/big.bin"
+          ln -s file.txt "$src/link"
+          for comp in gzip xz lz4 zstd lzo; do
+            mksquashfs "$src" "/tmp/out-$comp.sqfs" \
+              -comp "$comp" -noappend -no-progress -no-xattrs
+          done
+      - name: Loop-mount with the in-kernel squashfs driver and diff trees
+        run: |
+          set -euo pipefail
+          src=/tmp/src
+          for comp in gzip xz lz4 zstd lzo; do
+            img="/tmp/out-$comp.sqfs"
+            mnt="/tmp/mnt-$comp"
+            sudo mkdir -p "$mnt"
+            # Real in-kernel SquashFS driver via a loop device.
+            sudo mount -t squashfs -o loop "$img" "$mnt"
+            # (1) kernel mount vs source tree.
+            sudo diff -r "$src" "$mnt"
+            # (2) upstream unsquashfs extract vs source (strict oracle).
+            rm -rf "/tmp/unsq-$comp"
+            unsquashfs -d "/tmp/unsq-$comp" -no-xattrs "$img"
+            diff -r "$src" "/tmp/unsq-$comp"
+            # (3) our pure-Rust driver: file contents must byte-match the
+            # kernel mount for each regular file in the tree.
+            for rel in file.txt sub/another.txt sub/nested/big.bin; do
+              ours="$(./target/release/lssquashfs "$img" cat "/$rel" | sha256sum | cut -d' ' -f1)"
+              theirs="$(sudo cat "$mnt/$rel" | sha256sum | cut -d' ' -f1)"
+              if [ "$ours" != "$theirs" ]; then
+                echo "[$comp] /$rel: driver ($ours) != kernel ($theirs)" >&2
+                exit 1
+              fi
+            done
+            # The driver's directory listing must match the kernel's.
+            ours_ls="$(./target/release/lssquashfs "$img" ls /sub | awk '{print $NF}' | sort)"
+            theirs_ls="$(ls -1 "$mnt/sub" | sort)"
+            if [ "$ours_ls" != "$theirs_ls" ]; then
+              echo "[$comp] /sub listing mismatch" >&2
+              echo "driver: $ours_ls" >&2
+              echo "kernel: $theirs_ls" >&2
+              exit 1
+            fi
+            # The driver's symlink target must match the kernel's readlink.
+            ours_link="$(./target/release/lssquashfs "$img" readlink /link)"
+            theirs_link="$(readlink "$mnt/link")"
+            [ "$ours_link" = "$theirs_link" ] || {
+              echo "[$comp] /link target mismatch: $ours_link != $theirs_link" >&2
+              exit 1
+            }
+            sudo umount "$mnt"
+            echo "[$comp] kernel mount, unsquashfs, and driver all agree."
+          done
