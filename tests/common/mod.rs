@@ -263,6 +263,12 @@ pub fn basic_fixture_path() -> PathBuf {
     test_disks_dir().join("squashfs-basic.sqfs")
 }
 
+/// Raw bytes of the committed gzip fixture. Panics if the fixture is
+/// missing from the checkout.
+pub fn fixture_bytes() -> Vec<u8> {
+    std::fs::read(basic_fixture_path()).expect("read committed fixture")
+}
+
 /// `pattern(20000)` — the exact bytes of `/sub/deep/big.bin` in the
 /// committed basic fixture (the build script's Python LCG is byte-for-byte
 /// identical to [`pattern`]).

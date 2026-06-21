@@ -21,8 +21,8 @@ mod common;
 use std::ffi::{c_void, CString};
 
 use common::{
-    basic_big_bin, basic_fixture_path, embed_at_offset, fs_core_handle, mksquashfs_available,
-    unsquashfs_available, MemDev,
+    basic_big_bin, basic_fixture_path, embed_at_offset, fixture_bytes, fs_core_handle,
+    mksquashfs_available, unsquashfs_available, MemDev,
 };
 use fs_squashfs::capi::*;
 
@@ -31,10 +31,6 @@ const BIG_LEN: usize = 20000;
 
 fn fixture_cstr() -> CString {
     CString::new(basic_fixture_path().to_str().unwrap()).unwrap()
-}
-
-fn fixture_bytes() -> Vec<u8> {
-    std::fs::read(basic_fixture_path()).expect("read committed fixture")
 }
 
 /// Mount the committed fixture over the POSIX-path entry point.
