@@ -55,14 +55,14 @@ jobs:
           mksquashfs -version | head -1
           unsquashfs -version | head -1
 
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets
       # Oracle tests are #[ignore]-gated so a fresh checkout without
       # squashfs-tools still passes `cargo test`. The oracle is installed
       # above, so opt them in here — this is the canonical "can we read
       # what the upstream tooling emits, across every compressor" gate, the
       # strongest signal the release artifact is sound.
-      - run: cargo test --all-targets -- --ignored
+      - run: cargo test --locked --all-targets -- --ignored
 
   publish:
     name: publish to crates.io
