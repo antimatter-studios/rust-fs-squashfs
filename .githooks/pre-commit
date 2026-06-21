@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook — runs the two fast checks CI enforces, so a push
+# doesn't fail on something we could have caught locally in <30s.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+# or:
+#   ./scripts/install-hooks.sh
+#
+# Skip for a single WIP commit (use sparingly):
+#   git commit --no-verify
+#
+# NOTE: we deliberately don't run `cargo test` here — the oracle / kernel
+# -mount tests shell out to squashfs-tools and take minutes. That stays in
+# CI. The dependency-pinning gate, fmt, and clippy are the fast checks that
+# have bitten us before; running them here catches the failure locally in
+# <30s rather than after a push.
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Reproducible-tag gate: refuse to commit unpinned deps / a drifted or
+# missing lockfile. Self-contained — checks only what is reliable without
+# the path-dep sibling present, so it never false-blocks a fresh clone.
+"$(git rev-parse --show-toplevel)/.githooks/check-deps-pinned.sh"
+
+echo "[pre-commit] cargo fmt --check"
+if ! cargo fmt --check; then
+    echo
+    echo "[pre-commit] rustfmt would reformat the above files."
+    echo "[pre-commit] Fix with: cargo fmt"
+    exit 1
+fi
+
+# clippy needs the path-dep sibling (../rust-fs-core) present to resolve.
+# Skip rather than hard-fail on a fresh clone that hasn't cloned it yet —
+# CI's `cargo clippy --locked` is the authoritative backstop.
+if [ -d ../rust-fs-core ]; then
+    echo "[pre-commit] cargo clippy --locked --all-targets -- -D warnings"
+    cargo clippy --locked --all-targets -- -D warnings
+else
+    echo "[pre-commit] ../rust-fs-core not present — skipping clippy (CI enforces it)"
+fi
+
+echo "[pre-commit] OK"
