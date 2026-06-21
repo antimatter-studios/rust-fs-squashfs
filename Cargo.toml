@@ -1,6 +1,6 @@
 [package]
 name = "am-fs-squashfs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Pure-Rust SquashFS (read-only) filesystem driver. Clean-room implementation; reads SquashFS 4.0 images with every standard compressor (gzip, xz, lz4, zstd, lzo). Exposes a C ABI (fs_squashfs_*) suitable for FFI from C/C++/Swift/Go/etc."
