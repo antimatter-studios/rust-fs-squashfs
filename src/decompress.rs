@@ -95,9 +95,11 @@ pub fn decompress(comp: Compressor, input: &[u8], max_out: usize) -> Result<Vec<
         Compressor::Lzo => {
             // The codec crate has its own error type; map it onto ours
             // rather than leaking a dependency's type through this API.
-            lzo1x::decompress(input, max_out).map_err(|e| Error::BadMetadata(match e {
-                lzo1x::Error::Malformed => "malformed LZO1X stream",
-            }))
+            lzo1x::decompress(input, max_out).map_err(|e| {
+                Error::BadMetadata(match e {
+                    lzo1x::Error::Malformed => "malformed LZO1X stream",
+                })
+            })
         }
     }
 }
