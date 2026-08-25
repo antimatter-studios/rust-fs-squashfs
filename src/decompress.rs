@@ -8,7 +8,7 @@
 //! |----|------|----------------------------------------------------------|
 //! | 1  | gzip | zlib stream (2-byte header + DEFLATE + Adler-32)         |
 //! | 2  | lzma | legacy `.lzma` "alone" stream (best-effort)              |
-//! | 3  | lzo  | LZO1X stream (clean-room decoder in [`crate::lzo1x`])    |
+//! | 3  | lzo  | LZO1X stream, decoded by the `am-lzo1x` crate           |
 //! | 4  | xz   | `.xz` container stream                                   |
 //! | 5  | lz4  | LZ4 *block* format (no frame; size from block geometry)  |
 //! | 6  | zstd | standard zstd frame                                      |
@@ -34,7 +34,7 @@ use std::io::{BufReader, Read};
 use flate2::{Decompress, FlushDecompress};
 
 use crate::error::{Error, Result};
-use crate::lzo1x;
+use lzo1x;
 
 /// SquashFS compression ids from `squashfs_fs.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +92,13 @@ pub fn decompress(comp: Compressor, input: &[u8], max_out: usize) -> Result<Vec<
         Compressor::Lzma => decompress_lzma_alone(input, max_out),
         Compressor::Lz4 => decompress_lz4(input, max_out),
         Compressor::Zstd => decompress_zstd(input, max_out),
-        Compressor::Lzo => lzo1x::decompress(input, max_out),
+        Compressor::Lzo => {
+            // The codec crate has its own error type; map it onto ours
+            // rather than leaking a dependency's type through this API.
+            lzo1x::decompress(input, max_out).map_err(|e| Error::BadMetadata(match e {
+                lzo1x::Error::Malformed => "malformed LZO1X stream",
+            }))
+        }
     }
 }
 
