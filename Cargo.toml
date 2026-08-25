@@ -24,6 +24,12 @@ path = "src/bin/lssquashfs.rs"
 # so an FSKit extension (or any FFI consumer) can hand us a block-device
 # resource.
 am-fs-core = { path = "../rust-fs-core", version = "0.2" }
+# LZO1X codec (compression id 3). Extracted from this crate into its own
+# published crate so the Btrfs driver can share it rather than each
+# carrying a copy — the decoder is identical and the format is not
+# SquashFS-specific. Independent implementation from the published stream
+# grammar; the widely-used LZO libraries are GPL and unusable here.
+am-lzo1x = "0.1.0"
 # gzip/zlib codec (compression id 1). SquashFS gzip blocks are zlib-wrapped
 # DEFLATE, decoded via `flate2::Decompress::new(true)`. rust_backend
 # (miniz_oxide) keeps the dependency pure-Rust + cleanroom-safe; no

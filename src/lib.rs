@@ -40,7 +40,6 @@ pub mod dir;
 pub mod error;
 pub mod fs;
 pub mod inode;
-pub mod lzo1x;
 pub mod metablock;
 pub mod superblock;
 pub mod table;

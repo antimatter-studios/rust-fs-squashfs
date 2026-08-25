@@ -17,6 +17,7 @@ name = "am-fs-squashfs"
 version = "0.1.1"
 dependencies = [
  "am-fs-core",
+ "am-lzo1x",
  "assert_cmd",
  "flate2",
  "lz4_flex",
@@ -24,6 +25,12 @@ dependencies = [
  "ruzstd",
  "tempfile",
 ]
+
+[[package]]
+name = "am-lzo1x"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "762388655758a7548847ae271a4ec6b0552a53a8b4bec1fa68e7f2064312d042"
 
 [[package]]
 name = "anstyle"
