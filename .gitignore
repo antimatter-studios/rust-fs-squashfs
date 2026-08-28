@@ -20,3 +20,10 @@ tests/fixtures/*.sqfs
 # — regenerate them with scripts/build-squashfs-feature-images.sh.
 !test-disks/squashfs-basic.sqfs
 !test-disks/*.meta.txt
+
+# chore fingerprint cache (sources:/generates: checksums). Derived data.
+.chore/
+
+# Build output. `chore staticlib` writes the archive and headers here for a
+# consumer to copy out of (`chore artifact` prints this directory).
+/dist/
