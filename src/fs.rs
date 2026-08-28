@@ -121,7 +121,10 @@ impl Filesystem {
 
     /// Read up to `buf.len()` bytes from a regular file starting at
     /// `offset`. Returns the number of bytes copied (0 at/after EOF;
-    /// short when the read crosses EOF).
+    /// short when the read crosses EOF). EOF is the *only* reason for a
+    /// short return: a data block that decodes to less than its logical
+    /// length is corruption, and comes back as an error rather than as
+    /// fewer bytes.
     pub fn read_file(&self, inode: &Inode, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if !inode.is_regular_file() {
             return Err(Error::BadInode("read_file on non-file"));
@@ -145,7 +148,14 @@ impl Filesystem {
 
             let block = self.read_logical_block(inode, block_idx, &block_offsets)?;
             if block_off >= block.len() {
-                break;
+                // Nothing to copy and no progress to make. `read_logical_block`
+                // returns a block of exactly the length this offset was
+                // computed against, so reaching here means the image lied
+                // about a block; the loop must not spin, and it must not
+                // report the bytes copied so far as a complete read either.
+                return Err(Error::BadInode(
+                    "data block shorter than the offset read from it",
+                ));
             }
             let take = (block.len() - block_off).min(to_read - written);
             buf[written..written + take].copy_from_slice(&block[block_off..block_off + take]);
@@ -183,7 +193,17 @@ impl Filesystem {
                 // Sparse block — all zeros, no on-disk payload.
                 return Ok(vec![0u8; logical_len]);
             }
-            self.read_data_block(block_offsets[block_idx], size_word, logical_len)
+            let block = self.read_data_block(block_offsets[block_idx], size_word, logical_len)?;
+            // A full data block's decoded length is not a matter of opinion:
+            // the file size and the block geometry fix it exactly. A codec
+            // cannot check this for us — a stream that ends cleanly after
+            // fewer bytes than it should is well-formed as far as the
+            // decoder is concerned — and this is the only place that knows
+            // the expected length, so it is the only place that can refuse.
+            if block.len() != logical_len {
+                return Err(Error::BadInode("data block decoded to the wrong length"));
+            }
+            Ok(block)
         } else if inode.has_fragment() {
             let frag = self
                 .fragments
@@ -221,5 +241,107 @@ impl Filesystem {
             }
             Ok(raw)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inode::TYPE_BASIC_FILE;
+    use crate::metablock::tests::MemDev;
+    use crate::superblock::tests::synth_sb;
+    use flate2::{Compress, Compression, FlushCompress};
+    use std::sync::Mutex;
+
+    const BLOCK_LOG: u16 = 12;
+    const BLOCK_SIZE: usize = 1 << BLOCK_LOG;
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut enc = Compress::new(Compression::default(), true);
+        let mut out = vec![0u8; data.len() + 64];
+        enc.compress(data, &mut out, FlushCompress::Finish).unwrap();
+        out.truncate(enc.total_out() as usize);
+        out
+    }
+
+    /// A `Filesystem` over raw bytes. The file-read path touches only the
+    /// superblock and the device, so the lookup tables stay empty.
+    fn fs_over(bytes: Vec<u8>) -> Filesystem {
+        Filesystem {
+            dev: Arc::new(MemDev(Mutex::new(bytes))),
+            sb: Superblock::parse(&synth_sb(BLOCK_LOG, 0, 0)).unwrap(),
+            comp: Compressor::Gzip,
+            id_table: Vec::new(),
+            fragments: Vec::new(),
+        }
+    }
+
+    /// A regular-file inode whose data blocks start at offset 0.
+    fn file_inode(file_size: u64, block_sizes: Vec<u32>) -> Inode {
+        Inode {
+            inode_type: TYPE_BASIC_FILE,
+            permissions: 0o644,
+            uid_idx: 0,
+            gid_idx: 0,
+            mtime: 0,
+            inode_number: 1,
+            nlink: 1,
+            file_size,
+            dir_start_block: 0,
+            dir_block_offset: 0,
+            blocks_start: 0,
+            fragment_index: crate::superblock::SQUASHFS_INVALID_FRAG,
+            fragment_offset: 0,
+            block_sizes,
+            symlink_target: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn short_data_block_is_an_error_not_a_short_read() {
+        // A *well-formed* zlib stream that decodes to far fewer bytes than
+        // the block it stands in. No codec can catch this — the stream is
+        // valid and ends cleanly — so the only place that can is the read
+        // path, which knows how long the block is supposed to be.
+        //
+        // Reported as a successful 5-byte read before this was fixed:
+        // indistinguishable, to a caller, from a legitimate read at EOF.
+        let stream = zlib(b"short");
+        let mut img = stream.clone();
+        img.resize(BLOCK_SIZE, 0); // the rest of the on-disk block slot
+        let fs = fs_over(img);
+        // Size word: low 24 bits = on-disk length, bit 24 clear = compressed.
+        let inode = file_inode(BLOCK_SIZE as u64, vec![stream.len() as u32]);
+
+        let mut buf = vec![0u8; BLOCK_SIZE];
+        match fs.read_file(&inode, 0, &mut buf) {
+            Err(e) => assert!(matches!(e, Error::BadInode(_)), "{e:?}"),
+            Ok(n) => panic!(
+                "corrupt data block reported as a successful short read of \
+                 {n} bytes (file is {BLOCK_SIZE} bytes)"
+            ),
+        }
+    }
+
+    #[test]
+    fn whole_blocks_still_read_back_intact() {
+        // The guard above must not reject a healthy file: one full block
+        // plus a partial last block, which is the shape every non-fragment
+        // file has.
+        let payload: Vec<u8> = (0..BLOCK_SIZE + 100).map(|i| (i % 251) as u8).collect();
+        let first = zlib(&payload[..BLOCK_SIZE]);
+        let last = zlib(&payload[BLOCK_SIZE..]);
+        let mut img = first.clone();
+        img.extend_from_slice(&last);
+        let fs = fs_over(img);
+        let inode = file_inode(
+            payload.len() as u64,
+            vec![first.len() as u32, last.len() as u32],
+        );
+
+        let mut buf = vec![0u8; payload.len()];
+        let n = fs.read_file(&inode, 0, &mut buf).unwrap();
+        assert_eq!(n, payload.len());
+        assert_eq!(buf, payload);
     }
 }
