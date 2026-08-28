@@ -31,7 +31,7 @@
 
 use std::io::{BufReader, Read};
 
-use flate2::{Decompress, FlushDecompress};
+use flate2::{Decompress, FlushDecompress, Status};
 
 use crate::error::{Error, Result};
 use lzo1x;
@@ -108,8 +108,18 @@ fn decompress_zlib(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
     let mut out = vec![0u8; max_out];
     // `true` = the stream carries a zlib header (SquashFS gzip blocks do).
     let mut dec = Decompress::new(true);
-    dec.decompress(input, &mut out, FlushDecompress::Finish)
+    let status = dec
+        .decompress(input, &mut out, FlushDecompress::Finish)
         .map_err(|_| Error::BadMetadata("zlib decompression failed"))?;
+    // The returned `Status` is load-bearing, not decoration. A truncated
+    // block is not an `Err`: the decoder consumes what it was given, emits
+    // what it can, and reports `Ok(Status::Ok)` / `Ok(Status::BufError)` —
+    // "I would like more input". Only `StreamEnd` means the whole stream
+    // was decoded. Discarding the status returned that partial output as a
+    // successful short block, which every caller then treats as real data.
+    if status != Status::StreamEnd {
+        return Err(Error::BadMetadata("zlib stream did not finish"));
+    }
     let produced = dec.total_out() as usize;
     if produced > max_out {
         return Err(Error::BadMetadata("decompressed block exceeds max size"));
@@ -237,5 +247,40 @@ mod tests {
     fn malformed_gzip_errors() {
         let err = decompress(Compressor::Gzip, &[0xFF, 0xFF, 0xFF, 0xFF], 64).unwrap_err();
         assert!(matches!(err, Error::BadMetadata(_)));
+    }
+
+    #[test]
+    fn truncated_gzip_body_errors_rather_than_returning_short() {
+        // A valid zlib header followed by a body that stops early — the
+        // shape a clipped or partially-written block has on disk.
+        // `malformed_gzip_errors` above does not cover this: it fails the
+        // header check, whereas here the decoder starts happily and simply
+        // runs out of input. miniz_oxide reports that as `Ok(Status::Ok)` /
+        // `Ok(Status::BufError)`, not `Err`, so the whole distinction lives
+        // in the status this function used to discard.
+        //
+        // Content that only half-compresses, so cutting the stream really
+        // does cut decoded bytes rather than just the trailing checksum.
+        let mut original = Vec::new();
+        for i in 0..256u32 {
+            original.extend_from_slice(&i.to_le_bytes());
+            original.extend_from_slice(b"payload");
+        }
+        let compressed = zlib_compress(&original);
+        for cut in [compressed.len() / 2, compressed.len() - 4] {
+            // Named rather than `unwrap_err()` so a regression reports the
+            // failure mode under test — a silent short block — instead of
+            // an anonymous "called unwrap_err on an Ok value".
+            match decompress(Compressor::Gzip, &compressed[..cut], 8192) {
+                Err(e) => assert!(matches!(e, Error::BadMetadata(_)), "cut {cut}: {e:?}"),
+                Ok(out) => panic!(
+                    "truncated gzip block (cut at {cut} of {}) decoded as success: \
+                     {} of {} bytes returned with no error",
+                    compressed.len(),
+                    out.len(),
+                    original.len()
+                ),
+            }
+        }
     }
 }
