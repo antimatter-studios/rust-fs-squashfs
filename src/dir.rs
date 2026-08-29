@@ -21,6 +21,14 @@ use crate::error::{Error, Result};
 /// SquashFS caps names at 256 bytes.
 const SQUASHFS_NAME_LEN: usize = 256;
 
+/// A directory header describes at most this many entries.
+///
+/// The same number as [`SQUASHFS_NAME_LEN`] and an entirely unrelated
+/// quantity: that one is a byte length, this is a count. They were both
+/// written as a bare `256` in this file, which is how a reader ends up
+/// assuming one bound explains the other.
+const MAX_ENTRIES_PER_HEADER: usize = 256;
+
 /// One resolved directory entry.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
@@ -50,11 +58,11 @@ pub fn parse_listing(buf: &[u8]) -> Result<Vec<DirEntry>> {
         let base_inode = u32::from_le_bytes(buf[p + 8..p + 12].try_into().unwrap());
         p += 12;
 
-        // `count` is entries-minus-one; a header describes at most 256.
+        // `count` is entries-minus-one.
         let entries = (count as usize)
             .checked_add(1)
             .ok_or(Error::BadDirent("directory header count overflow"))?;
-        if entries > 256 {
+        if entries > MAX_ENTRIES_PER_HEADER {
             return Err(Error::BadDirent("directory header count > 256"));
         }
 

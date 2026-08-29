@@ -17,7 +17,12 @@ use crate::error::{Error, Result};
 use crate::superblock::{Superblock, METADATA_SIZE};
 use fs_core::BlockRead;
 
-const COMPRESSED_BIT: u16 = 0x8000;
+/// Set means the block is stored UNCOMPRESSED.
+///
+/// The polarity is the format's, not a choice made here, and it is the
+/// opposite of what the obvious name would suggest — which is why the
+/// name says what the bit means rather than what it is about.
+const UNCOMPRESSED_BIT: u16 = 0x8000;
 const SIZE_MASK: u16 = 0x7FFF;
 
 /// Read + decompress one metadata block whose 2-byte header sits at
@@ -32,7 +37,7 @@ pub fn read_block<R: BlockRead + ?Sized>(
     dev.read_at(abs, &mut hdr)?;
     let raw = u16::from_le_bytes(hdr);
     let on_disk = (raw & SIZE_MASK) as usize;
-    let is_compressed = raw & COMPRESSED_BIT == 0;
+    let is_compressed = raw & UNCOMPRESSED_BIT == 0;
     if on_disk == 0 || on_disk > METADATA_SIZE {
         return Err(Error::BadMetadata("metadata block size out of range"));
     }
@@ -191,7 +196,7 @@ pub(crate) mod tests {
     /// Emit an UNCOMPRESSED metadata block (sets bit 15).
     fn emit_meta_raw(payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(&((payload.len() as u16) | COMPRESSED_BIT).to_le_bytes());
+        out.extend_from_slice(&((payload.len() as u16) | UNCOMPRESSED_BIT).to_le_bytes());
         out.extend_from_slice(payload);
         out
     }
