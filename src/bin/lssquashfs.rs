@@ -89,12 +89,27 @@ fn cmd_ls(fs: &Filesystem, path: &str) {
 
 fn cmd_tree(fs: &Filesystem, path: &str, depth: usize) {
     let inode = lookup(fs, path);
+    walk_tree(fs, &inode, path, depth);
+}
+
+/// Print `inode`'s subtree.
+///
+/// Takes the inode rather than the path, because the caller already has
+/// it: `cmd_tree` used to read each child's inode, notice it was a
+/// directory, and then **throw it away and resolve the child's full
+/// path from the root** to recurse. Every level of depth therefore cost
+/// a fresh walk from `/`, so a tree `d` deep read the top directory `d`
+/// times.
+///
+/// The path is still carried, but only to print names and to name a
+/// directory in an error — never to look anything up.
+fn walk_tree(fs: &Filesystem, inode: &Inode, path: &str, depth: usize) {
     if !inode.is_dir() {
         println!("{}{}", "  ".repeat(depth), basename(path));
         return;
     }
     let entries = fs
-        .read_dir(&inode)
+        .read_dir(inode)
         .unwrap_or_else(|e| die(&format!("readdir {path}: {e}")));
     for e in entries {
         let name = String::from_utf8_lossy(&e.name).into_owned();
@@ -109,7 +124,7 @@ fn cmd_tree(fs: &Filesystem, path: &str, depth: usize) {
             } else {
                 format!("{path}/{name}")
             };
-            cmd_tree(fs, &sub, depth + 1);
+            walk_tree(fs, &child, &sub, depth + 1);
         }
     }
 }

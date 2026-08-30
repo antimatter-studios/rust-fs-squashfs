@@ -61,6 +61,41 @@ pub fn read_block<R: BlockRead + ?Sized>(
 /// A flat reader over a run of consecutive metadata blocks, starting at a
 /// given absolute byte offset and in-block offset. Decompresses blocks
 /// lazily as the caller reads past the current buffer.
+/// A squashfs metadata reference: which metablock, and where inside it.
+///
+/// The 48/16 split was open-coded at three sites — `(r >> 16)` and
+/// `(r & 0xFFFF)` written out each time, with the meaning of each half
+/// carried only by a comment in a fourth place. Two shifts and a mask
+/// is not hard to get right once; it is easy to get right differently
+/// three times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetadataRef {
+    /// Offset of the metablock from the start of its table.
+    pub block_offset: u64,
+    /// Byte offset of the record inside the decompressed metablock.
+    pub in_block: u16,
+}
+
+impl MetadataRef {
+    /// Split a packed reference.
+    ///
+    /// The high 48 bits are the block's offset from its table's start;
+    /// the low 16 are the offset within the decompressed block. A
+    /// metablock decompresses to at most 8 KiB, so 16 bits is generous
+    /// and the split cannot lose information.
+    pub fn from_packed(packed: u64) -> Self {
+        MetadataRef {
+            block_offset: packed >> 16,
+            in_block: (packed & 0xFFFF) as u16,
+        }
+    }
+
+    /// The absolute device offset of the metablock, given its table.
+    pub fn start_abs(self, table_start: u64) -> u64 {
+        table_start + self.block_offset
+    }
+}
+
 pub struct MetaCursor<'a, R: BlockRead + ?Sized> {
     dev: &'a R,
     sb: &'a Superblock,
@@ -252,5 +287,48 @@ pub(crate) mod tests {
             read_block(&dev, &sb(), 0),
             Err(Error::BadMetadata(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod metadata_ref_tests {
+    use super::MetadataRef;
+
+    /// The 48/16 split, against literal bits.
+    ///
+    /// It was open-coded at three sites with the meaning of each half
+    /// carried only by a comment in a fourth. Two shifts and a mask is
+    /// not hard to get right once; it is easy to get right *differently*
+    /// three times.
+    #[test]
+    fn the_low_sixteen_bits_are_the_offset_within_the_block() {
+        let r = MetadataRef::from_packed(0x0000_0001_2345_ABCD);
+        assert_eq!(r.block_offset, 0x0000_0001_2345, "the high 48 bits");
+        assert_eq!(r.in_block, 0xABCD, "the low 16 bits");
+    }
+
+    #[test]
+    fn a_reference_at_the_start_of_the_first_block_is_all_zeroes() {
+        let r = MetadataRef::from_packed(0);
+        assert_eq!((r.block_offset, r.in_block), (0, 0));
+        assert_eq!(r.start_abs(4096), 4096, "the table's own start");
+    }
+
+    /// `start_abs` is the table start plus the block offset — never the
+    /// packed value, which is the mistake the split exists to prevent.
+    #[test]
+    fn start_abs_adds_the_block_offset_to_the_table() {
+        let r = MetadataRef::from_packed((7 << 16) | 42);
+        assert_eq!(r.block_offset, 7);
+        assert_eq!(r.in_block, 42);
+        assert_eq!(r.start_abs(1000), 1007);
+    }
+
+    /// The widest offset the low half can hold is inside a metablock,
+    /// which decompresses to at most 8 KiB — so 16 bits is generous and
+    /// the split cannot lose information.
+    #[test]
+    fn sixteen_bits_more_than_covers_a_metablock() {
+        assert!(u16::MAX as usize >= 8192, "a metablock is at most 8 KiB");
     }
 }
