@@ -73,9 +73,17 @@ impl Compressor {
         }
     }
 
-    /// True if this build can actually decode the codec. Every standard
-    /// codec is decoded; legacy `lzma` (id 2) is best-effort but still
-    /// reported as supported so the read path attempts it.
+    /// True if this build can actually decode the codec.
+    ///
+    /// Currently `true` for everything, so its one caller's rejection
+    /// branch is unreachable. Every standard codec is decoded, and
+    /// legacy `lzma` (id 2) is best-effort but still reported as
+    /// supported so the read path attempts it rather than refusing.
+    ///
+    /// It is the seam for a codec that is recognised by
+    /// `Compressor::try_from` but not decodable in a given build — a
+    /// feature-gated one. Unknown ids never reach here; they are
+    /// rejected when the superblock is parsed.
     pub fn is_supported(&self) -> bool {
         true
     }

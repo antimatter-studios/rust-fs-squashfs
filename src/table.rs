@@ -20,7 +20,20 @@ use fs_core::BlockRead;
 /// Data-block size word convention (shared by file block_sizes and
 /// fragment entries): bit 24 set → stored UNCOMPRESSED; low 24 bits → the
 /// on-disk size of the (possibly compressed) block.
+/// Set means the data block is stored UNCOMPRESSED.
+///
+/// Named for what it is about rather than what it means, which reads
+/// backwards at every use: `raw & DATA_COMPRESSED_BIT == 0` is the test
+/// for "this block IS compressed". The polarity is the format's.
+///
+/// [`DATA_UNCOMPRESSED_BIT`] is the same value under a name that reads
+/// correctly. This one is kept because it is `pub` and published; prefer
+/// the new name in new code.
 pub const DATA_COMPRESSED_BIT: u32 = 1 << 24;
+
+/// Set means the data block is stored uncompressed. Same bit as
+/// [`DATA_COMPRESSED_BIT`], named for what it means.
+pub const DATA_UNCOMPRESSED_BIT: u32 = 1 << 24;
 pub const DATA_SIZE_MASK: u32 = (1 << 24) - 1;
 
 /// On-disk byte length of a data block from its size word.
@@ -30,7 +43,7 @@ pub fn data_on_disk_size(raw: u32) -> u32 {
 
 /// Whether a data block's payload is compressed (bit 24 clear).
 pub fn data_is_compressed(raw: u32) -> bool {
-    raw & DATA_COMPRESSED_BIT == 0
+    raw & DATA_UNCOMPRESSED_BIT == 0
 }
 
 /// One fragment-table entry: where a packed fragment block lives + its

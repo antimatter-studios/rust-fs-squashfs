@@ -34,6 +34,14 @@ impl Filesystem {
     /// tables once.
     pub fn open(dev: Arc<dyn BlockRead>) -> Result<Self> {
         let sb = superblock::read(&*dev)?;
+        // `compressor()` has already rejected an id this build does not
+        // know, so the guard below cannot fire today: `is_supported` is
+        // `true` for every codec, including legacy lzma, which is
+        // best-effort but still attempted.
+        //
+        // Kept as the seam for a codec that is recognised but cannot be
+        // decoded by this build — a feature-gated one, say. Deleting it
+        // would mean rediscovering where that check belongs.
         let comp = sb.compressor()?;
         if !comp.is_supported() {
             return Err(Error::UnsupportedCompression(sb.compression_id));
