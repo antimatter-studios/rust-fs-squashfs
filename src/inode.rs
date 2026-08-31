@@ -160,8 +160,9 @@ impl Inode {
     /// `inode_ref` high 48 bits = metadata-block offset relative to
     /// `inode_table_start`; low 16 bits = offset within that block.
     pub fn read<R: BlockRead + ?Sized>(dev: &R, sb: &Superblock, inode_ref: u64) -> Result<Inode> {
-        let start_abs = sb.inode_table_start + (inode_ref >> 16);
-        let in_block = (inode_ref & 0xFFFF) as u16;
+        let r = crate::metablock::MetadataRef::from_packed(inode_ref);
+        let start_abs = r.start_abs(sb.inode_table_start);
+        let in_block = r.in_block;
         let mut cur = MetaCursor::new(dev, sb, start_abs, in_block)?;
 
         // ----- 16-byte common header -----

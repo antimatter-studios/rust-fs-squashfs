@@ -49,11 +49,14 @@ contract, rather than folded into a readability pass.
 A god function by length, and it is also a flat dispatch over a format's own
 enumeration. Splitting it is defensible and so is leaving it. Not a defect.
 
-### M2 — the metadata-reference bit layout is open-coded in three places — **fixable, not yet done**
+### M2 — the metadata-reference bit layout, open-coded — **fixed**
 
-Genuine, three sites, and the fix is a small helper. Deferred only because it is
-the same kind of change as M4 and they are better done together, with the
-metablock tests as the contract.
+`(r >> 16)` and `(r & 0xFFFF)` written out at each site, with the meaning of
+each half carried only by a comment in a fourth place. `MetadataRef` names the
+48/16 split, with `start_abs(table_start)` for the part that needs the table.
+
+Two shifts and a mask is not hard to get right once; it is easy to get right
+*differently* three times. Mutation-checked: narrowing the mask fails 2 tests.
 
 ### M3 — `is_supported()` is a hardcoded `true` guarding a dead branch — **fixed**
 
@@ -66,10 +69,16 @@ one — and deleting it would mean rediscovering where that check belongs. Both
 `is_supported` and its caller now say so, including that unknown ids never reach
 there.
 
-### M4 — the same six-line FFI preamble is written out four times — **fixable, not yet done**
+### M4 — the same FFI preamble written out four times — **fixed**
 
-Real duplication. Same reasoning as M2: worth a change that is only about the
-FFI layer, where a mistake reports the wrong thing to a C caller.
+Clear the error slot, test the pointers, set `EINVAL`, return the failure value
+— at four entry points, with the message spelled differently at each. Four
+copies of a guard is four chances to test one pointer fewer than the function
+then dereferences.
+
+`reject_if_null(any_null, what, fail)` states it once and `what` names the
+arguments, which is the only part that legitimately differs. Mutation-checked:
+dropping the argument name fails 2 tests.
 
 ### M5 — `COMPRESSED_BIT` set means *un*compressed, in two modules — **fixed**
 
@@ -94,9 +103,15 @@ to share a value. It is now `MAX_ENTRIES_PER_HEADER`, with a comment saying so,
 because two bare `256`s in one file is how a reader concludes one bound
 explains the other.
 
-### M7 — `cmd_tree` re-resolves the inode it just read — **fixable, not yet done**
+### M7 — `cmd_tree` re-resolved the inode it had just read — **fixed**
 
-In the binary, not the library. Real waste, small fix, no correctness impact.
+It read each child's inode, noticed it was a directory, then **threw it away and
+resolved the child's full path from the root** to recurse. Every level of depth
+cost a fresh walk from `/`, so a tree `d` deep read the top directory `d` times.
+
+`walk_tree` takes the inode the caller already holds. The path is still carried,
+but only to print names and to name a directory in an error — never to look
+anything up.
 
 ### M8 — a third parallel match over `FileType` in the binary — **needs your decision**
 
@@ -104,9 +119,24 @@ The third copy of a mapping that already exists twice. Consolidating means
 deciding where the canonical one lives and whether the binary should depend on
 it, which is a structural choice.
 
-### M9 — fixed C-buffer sizes written as bare literal pairs — **fixable, not yet done**
+### M9 — C-buffer sizes written as bare literal pairs — **fixed**
 
-Same family as M2/M4 — the FFI layer. Grouped with them.
+`[c_char; 256]` in the struct and `.min(255)` at the copy, with nothing making
+them agree. Change one and the other is silently wrong — **a smaller array with
+the old bound writes past the end of a struct the C caller owns.**
+
+`SQFS_NAME_CAP` and `SQFS_COMPRESSION_NAME_CAP` are the one number each, with
+the `- 1` at the copy sites named as the NUL a C caller expects.
+
+**The first test of this was worthless and the probe said so.** Deriving both
+sides from the constant means changing it changes both, and the suite stayed
+green — the same trade recorded for `SECTOR_SIZE` in rust-partitions:
+consolidation removes the disagreement, so the guard has to become a test of the
+value against something external.
+
+Here that is `include/fs_squashfs.h`, which declares `char name[256]` — a C
+caller allocates that because the header says so. Asserting the constant against
+the header takes the mutation from **0 failures to 2**.
 
 ---
 

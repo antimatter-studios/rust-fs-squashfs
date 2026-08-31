@@ -70,6 +70,29 @@ fn clear_last_error() {
     LAST_ERRNO.with(|c| *c.borrow_mut() = 0);
 }
 
+/// Refuse a call whose required pointers are NULL, in the shape every
+/// entry point here uses.
+///
+/// The preamble — clear the error slot, test the pointers, set
+/// `EINVAL`, return the failure value — was written out at four entry
+/// points with the message spelled differently at each. Four copies of
+/// a guard is four chances to test one pointer fewer than the function
+/// then dereferences.
+///
+/// `what` names the arguments in the error, which is the only part that
+/// legitimately differs.
+///
+/// Returns `Some(fail)` when the call must not proceed, so a caller
+/// reads as `if let Some(rc) = reject_if_null(...) { return rc; }`.
+fn reject_if_null<T>(any_null: bool, what: &str, fail: T) -> Option<T> {
+    if any_null {
+        set_err_msg(&format!("null {what}"), errno::EINVAL);
+        Some(fail)
+    } else {
+        None
+    }
+}
+
 /// Wrap an FFI body in `catch_unwind`, returning `fail` on panic. Crossing
 /// the C ABI while unwinding is UB; this is the non-negotiable catch-net.
 fn ffi_guard<T>(fail: T, body: impl FnOnce() -> T + std::panic::UnwindSafe) -> T {
@@ -112,6 +135,20 @@ pub struct fs_squashfs_fs_t {
     fs: Filesystem,
 }
 
+/// Capacity of the `name` buffer in [`SqfsDirEntry`], in bytes.
+///
+/// The array length and the truncation bound were written separately —
+/// `[c_char; 256]` in the struct and `.min(255)` at the copy — with
+/// nothing making them agree. Change one and the other is silently
+/// wrong: a smaller array with the old bound **writes past the end**,
+/// and a larger one truncates for no reason.
+///
+/// The `- 1` is the NUL a C caller expects to find.
+pub const SQFS_NAME_CAP: usize = 256;
+
+/// Capacity of `compression_name` in [`SqfsInfo`], same contract.
+pub const SQFS_COMPRESSION_NAME_CAP: usize = 16;
+
 /// File-type enum — matches the `fs_squashfs_file_type_t` C enum.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -132,14 +169,14 @@ pub struct fs_squashfs_dirent_t {
     pub inode: u32,
     pub file_type: u8,
     pub name_len: u8,
-    pub name: [c_char; 256],
+    pub name: [c_char; SQFS_NAME_CAP],
 }
 
 #[repr(C)]
 pub struct fs_squashfs_volume_info_t {
     pub block_size: u32,
     pub compression_id: u16,
-    pub compression_name: [c_char; 16],
+    pub compression_name: [c_char; SQFS_COMPRESSION_NAME_CAP],
     pub inode_count: u32,
     pub fragment_count: u32,
     pub id_count: u16,
@@ -186,8 +223,9 @@ fn fill_attr(out: &mut fs_squashfs_attr_t, fs: &Filesystem, inode: &Inode) {
 }
 
 fn dir_entry_to_abi(e: &crate::dir::DirEntry) -> fs_squashfs_dirent_t {
-    let mut name = [0 as c_char; 256];
-    let copy = e.name.len().min(255);
+    let mut name = [0 as c_char; SQFS_NAME_CAP];
+    // One byte short of the buffer, for the terminating NUL.
+    let copy = e.name.len().min(SQFS_NAME_CAP - 1);
     for (i, &b) in e.name[..copy].iter().enumerate() {
         name[i] = b as c_char;
     }
@@ -247,9 +285,8 @@ pub unsafe extern "C" fn fs_squashfs_mount_with_callbacks(
         std::ptr::null_mut(),
         AssertUnwindSafe(|| {
             clear_last_error();
-            if cfg.is_null() {
-                set_err_msg("null cfg", errno::EINVAL);
-                return std::ptr::null_mut();
+            if let Some(rc) = reject_if_null(cfg.is_null(), "cfg", std::ptr::null_mut()) {
+                return rc;
             }
             let cfg = unsafe { &*cfg };
             let Some(read_fn) = cfg.read else {
@@ -300,9 +337,10 @@ pub unsafe extern "C" fn fs_squashfs_mount_with_fs_core_device(
         std::ptr::null_mut(),
         AssertUnwindSafe(|| {
             clear_last_error();
-            if handle.is_null() {
-                set_err_msg("null fs_core handle", errno::EINVAL);
-                return std::ptr::null_mut();
+            if let Some(rc) =
+                reject_if_null(handle.is_null(), "fs_core handle", std::ptr::null_mut())
+            {
+                return rc;
             }
             // Clone the inner Arc<dyn BlockDevice> and upcast to BlockRead —
             // SquashFS is read-only, so the read half of the trait is all we
@@ -340,9 +378,8 @@ pub unsafe extern "C" fn fs_squashfs_get_volume_info(
         -1,
         AssertUnwindSafe(|| {
             clear_last_error();
-            if fs.is_null() || info.is_null() {
-                set_err_msg("null fs or info", errno::EINVAL);
-                return -1;
+            if let Some(rc) = reject_if_null(fs.is_null() || info.is_null(), "fs or info", -1) {
+                return rc;
             }
             let fs = unsafe { &(*fs).fs };
             let info = unsafe { &mut *info };
@@ -352,7 +389,7 @@ pub unsafe extern "C" fn fs_squashfs_get_volume_info(
             info.block_size = sb.block_size;
             info.compression_id = sb.compression_id;
             let cname = fs.compressor().name().as_bytes();
-            let n = cname.len().min(15);
+            let n = cname.len().min(SQFS_COMPRESSION_NAME_CAP - 1);
             for (i, &b) in cname[..n].iter().enumerate() {
                 info.compression_name[i] = b as c_char;
             }
@@ -380,9 +417,12 @@ pub unsafe extern "C" fn fs_squashfs_stat(
         -1,
         AssertUnwindSafe(|| {
             clear_last_error();
-            if fs.is_null() || path.is_null() || attr.is_null() {
-                set_err_msg("null fs, path, or attr", errno::EINVAL);
-                return -1;
+            if let Some(rc) = reject_if_null(
+                fs.is_null() || path.is_null() || attr.is_null(),
+                "fs, path, or attr",
+                -1,
+            ) {
+                return rc;
             }
             let fs = unsafe { &(*fs).fs };
             let path = unsafe { cstr_to_str(path) };
@@ -566,4 +606,66 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
             0
         }),
     )
+}
+
+#[cfg(test)]
+mod buffer_capacity_tests {
+    use super::*;
+
+    /// The C struct's array and the truncation bound are one number.
+    ///
+    /// They were written separately — `[c_char; 256]` and `.min(255)` —
+    /// with nothing making them agree. A smaller array with the old
+    /// bound writes past the end of a struct a C caller owns.
+    /// The constants match what `include/fs_squashfs.h` publishes.
+    ///
+    /// This is the check that matters, and the one the other tests in
+    /// this module cannot make: they derive both sides from the
+    /// constant, so changing it changes both and they stay green. The
+    /// header is the **external** oracle — a C caller allocates
+    /// `char name[256]` because the header says so, and a Rust struct
+    /// that disagrees writes past the end of memory the caller owns.
+    #[test]
+    fn the_buffer_capacities_match_the_published_c_header() {
+        let header = include_str!("../include/fs_squashfs.h");
+        assert!(
+            header.contains(&format!("name[{SQFS_NAME_CAP}]")),
+            "fs_squashfs.h does not declare name[{SQFS_NAME_CAP}]"
+        );
+        assert!(
+            header.contains(&format!("compression_name[{SQFS_COMPRESSION_NAME_CAP}]")),
+            "fs_squashfs.h does not declare compression_name[{SQFS_COMPRESSION_NAME_CAP}]"
+        );
+    }
+
+    #[test]
+    fn the_name_buffer_and_its_truncation_bound_agree() {
+        let e: fs_squashfs_dirent_t = unsafe { std::mem::zeroed() };
+        assert_eq!(e.name.len(), SQFS_NAME_CAP);
+        // The copy bound must leave exactly one byte for the NUL.
+        assert_eq!(SQFS_NAME_CAP - 1, e.name.len() - 1);
+    }
+
+    #[test]
+    fn the_compression_name_buffer_and_its_bound_agree() {
+        let i: fs_squashfs_volume_info_t = unsafe { std::mem::zeroed() };
+        assert_eq!(i.compression_name.len(), SQFS_COMPRESSION_NAME_CAP);
+    }
+
+    /// A NULL argument is refused with EINVAL rather than dereferenced.
+    #[test]
+    fn a_null_argument_is_refused_and_named() {
+        clear_last_error();
+        assert_eq!(reject_if_null(true, "fs or info", -1), Some(-1));
+        let msg = LAST_ERROR.with(|c| c.borrow().to_string_lossy().into_owned());
+        assert!(
+            msg.contains("fs or info"),
+            "the error should name it: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_non_null_argument_is_allowed_through() {
+        assert_eq!(reject_if_null(false, "fs", -1), None);
+    }
 }
