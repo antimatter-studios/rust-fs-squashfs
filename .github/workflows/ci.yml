@@ -23,7 +23,7 @@ jobs:
       # Clone the sibling repo alongside so cargo can resolve it.
       # Anonymous HTTPS clone — rust-fs-core is public.
       - name: Clone sibling rust-fs-core
-        run: git clone --depth 1 --branch v0.2.3 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.2.4 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,7 +68,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Clone sibling rust-fs-core
-        run: git clone --depth 1 --branch v0.2.3 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+        run: git clone --depth 1 --branch v0.2.4 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install squashfs-tools
