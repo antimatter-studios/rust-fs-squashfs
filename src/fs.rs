@@ -85,20 +85,17 @@ impl Filesystem {
         if !inode.is_dir() {
             return Err(Error::NotADirectory);
         }
-        // `file_size` for an extended directory is a `u32`, so this is
-        // up to about 4 GiB -- and `read_exact` grows the cursor's
-        // buffer to it and then `to_vec`s a second copy, both before
-        // the listing is parsed. A directory's listing is metadata, and
-        // metadata cannot be larger than the filesystem that holds it.
+        // NOT BOUNDED AGAINST THE IMAGE, deliberately. A listing lives
+        // in compressed metadata blocks, so its decompressed length
+        // routinely exceeds the whole image: `mksquashfs` on a
+        // directory of two thousand files produced a 41049-byte listing
+        // inside a 20480-byte image. What bounds the memory here is
+        // that `MetaCursor` grows its buffer one 8 KiB metablock at a
+        // time and stops when a device read runs off the end, so the
+        // cost is bounded by the metadata the image really holds.
         let listing_len = inode.dir_listing_len();
         if listing_len == 0 {
             return Ok(Vec::new());
-        }
-        let filesystem = self.sb.bytes_used.min(self.dev.size_bytes());
-        if listing_len as u64 > filesystem {
-            return Err(Error::BadInode(
-                "directory listing is longer than the filesystem holding it",
-            ));
         }
         let start_abs = self.sb.directory_table_start + inode.dir_start_block as u64;
         let mut cur = MetaCursor::new(&*self.dev, &self.sb, start_abs, inode.dir_block_offset)?;
@@ -322,38 +319,33 @@ mod tests {
         }
     }
 
-    /// A directory's listing is read whole into a metadata cursor's
-    /// buffer and then copied a second time, both before it is parsed.
-    /// `file_size` for an extended directory is a `u32`, so that is up
-    /// to about 4 GiB twice over, from an inode field with nothing
-    /// tying it to the image.
+    /// A directory's listing decompresses out of metadata blocks, so
+    /// its length is not bounded by the image: `mksquashfs` on a
+    /// directory of two thousand files produces a 41049-byte listing
+    /// inside a 20480-byte image. A bound against `bytes_used` was
+    /// tried and refused exactly that, which is why this test exists
+    /// rather than that bound.
     ///
-    /// A listing is metadata, and metadata cannot be larger than the
-    /// filesystem holding it.
+    /// What bounds the memory is `MetaCursor`, which grows its buffer
+    /// one 8 KiB metablock at a time and stops when a device read runs
+    /// off the end of the image.
     #[test]
-    fn a_directory_listing_longer_than_the_filesystem_is_refused() {
-        let mut fs = fs_over(vec![0u8; 64 * 1024]);
-        fs.sb.bytes_used = 64 * 1024;
+    fn a_listing_longer_than_the_image_still_reads_and_still_terminates() {
+        let fs = fs_over(vec![0u8; 64 * 1024]);
 
         let mut dir = file_inode(0, Vec::new());
         dir.inode_type = crate::inode::TYPE_BASIC_DIR;
         dir.file_size = u64::from(u32::MAX);
 
-        let why = format!("{:?}", fs.read_dir(&dir).err());
-        assert!(
-            why.contains("longer than the filesystem"),
-            "a 4 GiB listing in a 64 KiB image was answered with {why}"
-        );
-
-        // A listing the image could hold is still read -- it fails on
-        // the metadata block, which is the next thing to go wrong, not
-        // on its declared length.
-        dir.file_size = 1024;
+        // The refusal comes from the device running out, not from the
+        // declared length -- and it comes back rather than hanging or
+        // allocating four gigabytes.
         let why = format!("{:?}", fs.read_dir(&dir).err());
         assert!(
             !why.contains("longer than the filesystem"),
-            "a 1021-byte listing in a 64 KiB image was refused as {why}"
+            "a listing longer than the image was refused on its declared length: {why}"
         );
+        assert!(why != "None", "a 4 GiB listing in a 64 KiB image succeeded");
     }
 
     #[test]
