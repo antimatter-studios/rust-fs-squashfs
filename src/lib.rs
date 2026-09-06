@@ -27,12 +27,12 @@
 //! - [`superblock`] — parse + validate the 96-byte superblock
 //! - [`decompress`] — codec dispatch (gzip / xz / lz4 / zstd / lzo)
 //! - [`metablock`] — 8 KiB metadata-block reader + cross-block cursor
-//! - [`table`] — indirect lookup tables (id table, fragment table)
+//! - [`table`] — indirect lookup tables (id, fragment, export)
 //! - [`xattr`] — extended attributes: the id table and the name/value pairs
 //! - [`inode`] — all SquashFS inode shapes (basic + extended)
 //! - [`dir`] — directory listing parser
 //! - [`fs`] — top-level handle: path lookup, dir listing, file/symlink read,
-//!   extended attributes
+//!   extended attributes, inode-number resolution
 //! - [`capi`] — C ABI exports matching `include/fs_squashfs.h`
 
 #![deny(unsafe_op_in_unsafe_fn)]

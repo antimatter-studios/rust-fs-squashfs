@@ -19,7 +19,8 @@ read subset of its sister drivers' surface — no mkfs / create / write.
 | Compression (legacy) | `lzma` (id 2) — best-effort |
 | Inodes | basic + extended: dir, file, symlink, dev/fifo/socket |
 | Data | full blocks, sparse blocks, tail fragments |
-| Lookup tables | id (uid/gid), fragment, xattr |
+| Lookup tables | id (uid/gid), fragment, xattr, export |
+| Resolve an inode number | through the export table: `read_inode_by_number`, `fs_squashfs_stat_ino` |
 | xattrs | read: `list_xattrs` / `get_xattr`, including shared sets and out-of-line values. No write path — SquashFS has none. |
 
 Every standard compressor `mksquashfs` can emit is decoded. gzip/xz/zstd use their

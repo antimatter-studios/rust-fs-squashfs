@@ -24,9 +24,23 @@ never does.
     sets, both resolve — that indirection is what the id table is for.
   - An image built with `-no-xattrs` reports an empty list rather than an
     error, as does a file with no attributes in an image that has them.
-
-### Added
-
+- **An inode number resolves back to its inode**, through the export
+  table the superblock already pointed at and nothing had ever read.
+  Every other way into the filesystem starts at the root and walks down,
+  which is useless to a caller holding nothing but a number — an NFS file
+  handle, or any identifier a layer above handed out earlier. Without
+  this it had to keep its own map of every inode it ever mentioned, or
+  walk the tree again.
+  - `Filesystem::read_inode_by_number` and `Filesystem::is_exportable` in
+    Rust; `fs_squashfs_stat_ino` and `fs_squashfs_is_exportable` on the
+    C ABI.
+  - Only the table's pointer array is loaded at mount — one `u64` per
+    8 KiB of entries — and a lookup decompresses the single metadata
+    block it needs, through the metadata cache. The table itself is the
+    only one here that scales with the image: a million inodes is eight
+    megabytes of it.
+  - An image built with `mksquashfs -no-exports` says so rather than
+    guessing.
 - A cache of **decompressed** metadata blocks, keyed by their offset in
   the image. SquashFS keeps inodes and directory listings in 8 KiB
   compressed blocks; before this, every inode read and every listing put
@@ -40,6 +54,10 @@ never does.
 
 ### Changed
 
+- `Error` gains `NotExportable`, for an image with no export table.
+  Distinct from `NotFound` on purpose: one says the inode is not there,
+  the other says the question cannot be asked of this image, and a caller
+  that treated them alike would retry a lookup that can never succeed.
 - `metablock::read_block`, `metablock::MetaCursor::new` and
   `Inode::read` take the cache to consult (`None` for none), and
   `read_block` hands back a shared `Arc<Vec<u8>>` rather than a fresh

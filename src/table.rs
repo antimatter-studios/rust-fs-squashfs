@@ -13,7 +13,7 @@
 //! and slice by index.
 
 use crate::error::{Error, Result};
-use crate::metablock::read_block;
+use crate::metablock::{read_block, MetaCache};
 use crate::superblock::{Superblock, METADATA_SIZE};
 use fs_core::BlockRead;
 
@@ -29,6 +29,13 @@ use fs_core::BlockRead;
 /// [`DATA_UNCOMPRESSED_BIT`] is the same value under a name that reads
 /// correctly. This one is kept because it is `pub` and published; prefer
 /// the new name in new code.
+/// The value an optional table's start carries when the table is absent.
+///
+/// `mksquashfs -no-exports` and `-no-xattrs` both write it, and so does
+/// every other switch that leaves a table out. One name for it, in the
+/// module about tables, rather than one per table that can be missing.
+pub const NO_TABLE: u64 = u64::MAX;
+
 pub const DATA_COMPRESSED_BIT: u32 = 1 << 24;
 
 /// Set means the data block is stored uncompressed. Same bit as
@@ -156,6 +163,141 @@ pub fn read_fragment_table<R: BlockRead + ?Sized>(
     Ok(frags)
 }
 
+/// Bytes per export-table entry: one packed inode reference.
+const EXPORT_ENTRY_SIZE: usize = 8;
+
+/// The export table — an inode number back to the inode.
+///
+/// # What it is for
+///
+/// Every other way into this filesystem starts from the root and walks
+/// down. That is fine for `open("/a/b/c")` and useless for a caller
+/// holding nothing but a number, which is the position an NFS server is
+/// in when a client hands back a file handle, and the position any layer
+/// that hands out file IDs and is later asked to resolve one is in too.
+/// Without this table such a caller has to keep its own map of every
+/// inode it ever mentioned, or walk the whole tree again.
+///
+/// # Shape
+///
+/// A raw `u64` pointer array at `export_table_start` — the same indirect
+/// shape as the id and fragment tables — whose metadata blocks hold one
+/// `u64` per inode. Entry `n - 1` is the packed metadata reference for
+/// inode number `n`: INODE NUMBERS ARE 1-BASED, and an off-by-one here
+/// returns a real inode that is simply the wrong one, which is the
+/// failure this table's user is least able to detect. Verified against
+/// `mksquashfs` 4.7.5: every entry resolved to an inode whose own
+/// `inode_number` field was its index plus one.
+///
+/// # Why the entries are not loaded at mount
+///
+/// The table has one entry per inode, not per distinct anything, so it
+/// is the only table here that scales with the size of the image: a
+/// million-inode image is eight megabytes of it. What IS loaded is the
+/// pointer array — one `u64` per 8 KiB of entries, so eight kilobytes
+/// for that same million inodes — and a lookup then decompresses the one
+/// metadata block it needs. Those go through the metadata cache, so a
+/// run of lookups in the same region pays for the block once.
+///
+/// Eight divides the 8 KiB metadata size, so an entry never straddles a
+/// block boundary and a lookup is always one block.
+#[derive(Debug, Clone)]
+pub struct ExportTable {
+    /// Absolute offset of each metadata block holding entries.
+    block_starts: Vec<u64>,
+    /// How many inodes the table covers — the superblock's `inode_count`.
+    inode_count: u32,
+}
+
+impl ExportTable {
+    /// How many inodes the table covers.
+    pub fn inode_count(&self) -> u32 {
+        self.inode_count
+    }
+
+    /// The packed metadata reference for `inode_number`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] when the number is zero or past the last
+    /// inode — inode 0 does not exist, so a caller passing it has a bug
+    /// rather than an unusual filesystem.
+    pub fn lookup<R: BlockRead + ?Sized>(
+        &self,
+        dev: &R,
+        sb: &Superblock,
+        inode_number: u32,
+        cache: Option<&MetaCache>,
+    ) -> Result<u64> {
+        if inode_number == 0 || inode_number > self.inode_count {
+            return Err(Error::NotFound);
+        }
+        let index = (inode_number - 1) as usize;
+        let byte = index * EXPORT_ENTRY_SIZE;
+        let block = byte / METADATA_SIZE;
+        let within = byte % METADATA_SIZE;
+        let start = *self
+            .block_starts
+            .get(block)
+            .ok_or(Error::BadMetadata("export table is shorter than it claims"))?;
+        let (data, _next) = read_block(dev, sb, start, cache)?;
+        let end = within + EXPORT_ENTRY_SIZE;
+        if end > data.len() {
+            return Err(Error::BadMetadata(
+                "export table entry runs past its metadata block",
+            ));
+        }
+        Ok(u64::from_le_bytes(data[within..end].try_into().unwrap()))
+    }
+}
+
+/// Read the export table's pointer array, or `None` when the image was
+/// built with `mksquashfs -no-exports`.
+///
+/// Absence is a normal answer, not an error: the table is optional, and
+/// an image without one simply cannot be asked this question.
+pub fn read_export_table<R: BlockRead + ?Sized>(
+    dev: &R,
+    sb: &Superblock,
+) -> Result<Option<ExportTable>> {
+    let start = sb.export_table_start;
+    if start == NO_TABLE {
+        return Ok(None);
+    }
+    let inode_count = sb.inode_count;
+    if inode_count == 0 {
+        return Ok(Some(ExportTable {
+            block_starts: Vec::new(),
+            inode_count: 0,
+        }));
+    }
+    let total_bytes = inode_count as usize * EXPORT_ENTRY_SIZE;
+    let n_blocks = total_bytes.div_ceil(METADATA_SIZE);
+    // The same rule `read_indirect_table` applies, for the same reason:
+    // `inode_count` is a `u32` off the superblock, so 0xFFFFFFFF asks
+    // for a 32 MiB pointer array on every mount from a 96-byte header.
+    // Only the pointers are read here — the entries are not — so this is
+    // the only place the count can be checked against reality.
+    let array_bytes = n_blocks
+        .checked_mul(8)
+        .ok_or(Error::BadMetadata("export table pointer array overflows"))?;
+    let room = sb.bytes_used.min(dev.size_bytes()).saturating_sub(start);
+    if array_bytes as u64 > room {
+        return Err(Error::BadMetadata(
+            "export table declares more blocks than it has room for",
+        ));
+    }
+    let mut ptr_bytes = vec![0u8; array_bytes];
+    dev.read_at(start, &mut ptr_bytes)?;
+    let block_starts = (0..n_blocks)
+        .map(|i| u64::from_le_bytes(ptr_bytes[i * 8..i * 8 + 8].try_into().unwrap()))
+        .collect();
+    Ok(Some(ExportTable {
+        block_starts,
+        inode_count,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +341,132 @@ mod tests {
             "a 64 MiB fragment table in a 4000-byte image was refused as {why}, \
              which means the buffer was allocated and read first"
         );
+    }
+
+    /// An export table built by hand, so the indexing can be tested
+    /// against entries whose values are known.
+    ///
+    /// **Necessary but not sufficient**: the encoder here writes `u64`s
+    /// where the reader expects them, so a misreading of the on-disk
+    /// shape would be baked into both. Whether the shape is right, and
+    /// whether entry `n - 1` really is inode `n`, is settled by
+    /// `tests/export_oracle.rs` against images `mksquashfs` wrote.
+    fn export_image(refs: &[u64]) -> (Vec<u8>, Superblock) {
+        use crate::metablock::tests::emit_meta;
+        use crate::superblock::tests::synth_sb;
+
+        let mut entries = Vec::new();
+        for r in refs {
+            entries.extend_from_slice(&r.to_le_bytes());
+        }
+        let mut img = vec![0u8; 96];
+        let block_at = img.len() as u64;
+        img.extend_from_slice(&emit_meta(&entries));
+        let table_at = img.len() as u64;
+        img.extend_from_slice(&block_at.to_le_bytes());
+
+        let mut raw = synth_sb(17, 0, 0);
+        raw[0x04..0x08].copy_from_slice(&(refs.len() as u32).to_le_bytes()); // inode_count
+        raw[0x28..0x30].copy_from_slice(&(img.len() as u64 + 8).to_le_bytes()); // bytes_used
+        raw[0x58..0x60].copy_from_slice(&table_at.to_le_bytes());
+        let sb = Superblock::parse(&raw).unwrap();
+        (img, sb)
+    }
+
+    /// Inode numbers are 1-BASED. Getting this wrong returns a real
+    /// inode that is simply the wrong one, which a caller resolving a
+    /// file identifier cannot detect at all.
+    #[test]
+    fn entry_n_minus_one_is_inode_n() {
+        use crate::metablock::tests::MemDev;
+        use std::sync::Mutex;
+
+        let refs = [0x1111u64, 0x2222, 0x3333, 0x4444];
+        let (img, sb) = export_image(&refs);
+        let dev = MemDev(Mutex::new(img));
+        let table = read_export_table(&dev, &sb).unwrap().expect("a table");
+        assert_eq!(table.inode_count(), refs.len() as u32);
+
+        for (i, want) in refs.iter().enumerate() {
+            let n = i as u32 + 1;
+            assert_eq!(
+                table.lookup(&dev, &sb, n, None).unwrap(),
+                *want,
+                "inode {n} resolved to the wrong entry"
+            );
+        }
+    }
+
+    /// Zero is not an inode number, and neither is one past the last.
+    #[test]
+    fn numbers_outside_the_table_are_refused() {
+        use crate::metablock::tests::MemDev;
+        use std::sync::Mutex;
+
+        let (img, sb) = export_image(&[0x1111, 0x2222]);
+        let dev = MemDev(Mutex::new(img));
+        let table = read_export_table(&dev, &sb).unwrap().unwrap();
+        assert!(matches!(
+            table.lookup(&dev, &sb, 0, None),
+            Err(Error::NotFound)
+        ));
+        assert!(matches!(
+            table.lookup(&dev, &sb, 3, None),
+            Err(Error::NotFound)
+        ));
+        assert!(matches!(
+            table.lookup(&dev, &sb, u32::MAX, None),
+            Err(Error::NotFound)
+        ));
+    }
+
+    /// `mksquashfs -no-exports` writes the sentinel every absent table
+    /// uses, and absence has to be a normal answer rather than an error.
+    #[test]
+    fn an_image_without_an_export_table_reports_none() {
+        use crate::metablock::tests::MemDev;
+        use crate::superblock::tests::synth_sb;
+        use std::sync::Mutex;
+
+        let mut raw = synth_sb(17, 0, 0);
+        raw[0x58..0x60].copy_from_slice(&NO_TABLE.to_le_bytes());
+        let sb = Superblock::parse(&raw).unwrap();
+        let dev = MemDev(Mutex::new(vec![0u8; 96]));
+        assert!(read_export_table(&dev, &sb).unwrap().is_none());
+    }
+
+    /// `inode_count` is a `u32` off the superblock and it sizes a read
+    /// at mount. 0xFFFFFFFF asks for a 32 MiB pointer array from a
+    /// 96-byte header, and the assertion is on WHICH refusal: the read
+    /// comes up short either way, but only after the buffer is
+    /// allocated.
+    #[test]
+    fn an_export_table_with_no_room_for_its_pointers_is_refused_by_name() {
+        use crate::metablock::tests::MemDev;
+        use crate::superblock::tests::synth_sb;
+        use std::sync::Mutex;
+
+        let mut raw = synth_sb(17, 0, 96);
+        raw[0x04..0x08].copy_from_slice(&u32::MAX.to_le_bytes()); // inode_count
+        raw[0x28..0x30].copy_from_slice(&4000u64.to_le_bytes()); // bytes_used
+        raw[0x58..0x60].copy_from_slice(&96u64.to_le_bytes());
+        let sb = Superblock::parse(&raw).unwrap();
+
+        let dev = MemDev(Mutex::new(vec![0u8; 4000]));
+        let why = format!("{:?}", read_export_table(&dev, &sb).err());
+        assert!(
+            why.contains("more blocks than it has room for"),
+            "a 32 MiB export table in a 4000-byte image was refused as {why}, \
+             which means the buffer was allocated and read first"
+        );
+    }
+
+    /// Eight bytes per entry divides the 8 KiB metadata size, which is
+    /// what makes a lookup exactly one block. Pinned, because a lookup
+    /// that spanned two blocks would have to be written differently.
+    #[test]
+    fn an_entry_never_straddles_a_metadata_block() {
+        assert_eq!(METADATA_SIZE % EXPORT_ENTRY_SIZE, 0);
     }
 
     #[test]

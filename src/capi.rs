@@ -441,6 +441,75 @@ pub unsafe extern "C" fn fs_squashfs_stat(
     )
 }
 
+/// Stat by inode number rather than by path, through the image's export
+/// table.
+///
+/// The number is the one `fs_squashfs_stat` and `fs_squashfs_dir_next`
+/// already hand back in their `inode` field. Without this, a caller that
+/// keeps those numbers — as any layer handing out file identifiers must
+/// — has no way to turn one back into a file except by walking the tree
+/// again.
+///
+/// Returns -1 with ENOTSUP when the image was built with
+/// `mksquashfs -no-exports` and carries no such map, and -1 with ENOENT
+/// for a number the image does not have. A caller can act on the
+/// difference: the first will never succeed for this image.
+///
+/// # Safety
+///
+/// `fs` must be live; `attr` writable.
+#[no_mangle]
+pub unsafe extern "C" fn fs_squashfs_stat_ino(
+    fs: *mut fs_squashfs_fs_t,
+    inode_number: u32,
+    attr: *mut fs_squashfs_attr_t,
+) -> c_int {
+    ffi_guard(
+        -1,
+        AssertUnwindSafe(|| {
+            clear_last_error();
+            if let Some(rc) = reject_if_null(fs.is_null() || attr.is_null(), "fs or attr", -1) {
+                return rc;
+            }
+            let fs = unsafe { &(*fs).fs };
+            let attr = unsafe { &mut *attr };
+            match fs.read_inode_by_number(inode_number) {
+                Ok(inode) => {
+                    fill_attr(attr, fs, &inode);
+                    0
+                }
+                Err(e) => {
+                    set_err_from(&e, &format!("stat inode {inode_number}"));
+                    -1
+                }
+            }
+        }),
+    )
+}
+
+/// Whether this image can answer [`fs_squashfs_stat_ino`] at all.
+///
+/// 1 when it carries an export table, 0 when it does not, -1 on a NULL
+/// handle. Worth asking once at mount rather than discovering it on the
+/// first lookup.
+///
+/// # Safety
+///
+/// `fs` must be live or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn fs_squashfs_is_exportable(fs: *mut fs_squashfs_fs_t) -> c_int {
+    ffi_guard(
+        -1,
+        AssertUnwindSafe(|| {
+            clear_last_error();
+            if let Some(rc) = reject_if_null(fs.is_null(), "fs", -1) {
+                return rc;
+            }
+            c_int::from(unsafe { &(*fs).fs }.is_exportable())
+        }),
+    )
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn fs_squashfs_dir_open(
     fs: *mut fs_squashfs_fs_t,
