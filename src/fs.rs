@@ -85,6 +85,14 @@ impl Filesystem {
         if !inode.is_dir() {
             return Err(Error::NotADirectory);
         }
+        // NOT BOUNDED AGAINST THE IMAGE, deliberately. A listing lives
+        // in compressed metadata blocks, so its decompressed length
+        // routinely exceeds the whole image: `mksquashfs` on a
+        // directory of two thousand files produced a 41049-byte listing
+        // inside a 20480-byte image. What bounds the memory here is
+        // that `MetaCursor` grows its buffer one 8 KiB metablock at a
+        // time and stops when a device read runs off the end, so the
+        // cost is bounded by the metadata the image really holds.
         let listing_len = inode.dir_listing_len();
         if listing_len == 0 {
             return Ok(Vec::new());
@@ -175,10 +183,16 @@ impl Filesystem {
     /// Absolute on-disk start offset of each full data block.
     fn block_offsets(&self, inode: &Inode) -> Vec<u64> {
         let mut offs = Vec::with_capacity(inode.block_sizes.len());
+        // Saturating: `blocks_start` is a raw `u64` for an extended
+        // file inode, so the running sum can leave a `u64` -- and in
+        // release, where this crate ships with `overflow-checks` off,
+        // it wrapped to a small offset that then reads some unrelated
+        // part of the image as the file's data. Saturating gives an
+        // offset no device reaches, so the read fails and says so.
         let mut cursor = inode.blocks_start;
         for &sz in &inode.block_sizes {
             offs.push(cursor);
-            cursor += table::data_on_disk_size(sz) as u64;
+            cursor = cursor.saturating_add(u64::from(table::data_on_disk_size(sz)));
         }
         offs
     }
@@ -303,6 +317,35 @@ mod tests {
             block_sizes,
             symlink_target: Vec::new(),
         }
+    }
+
+    /// A directory's listing decompresses out of metadata blocks, so
+    /// its length is not bounded by the image: `mksquashfs` on a
+    /// directory of two thousand files produces a 41049-byte listing
+    /// inside a 20480-byte image. A bound against `bytes_used` was
+    /// tried and refused exactly that, which is why this test exists
+    /// rather than that bound.
+    ///
+    /// What bounds the memory is `MetaCursor`, which grows its buffer
+    /// one 8 KiB metablock at a time and stops when a device read runs
+    /// off the end of the image.
+    #[test]
+    fn a_listing_longer_than_the_image_still_reads_and_still_terminates() {
+        let fs = fs_over(vec![0u8; 64 * 1024]);
+
+        let mut dir = file_inode(0, Vec::new());
+        dir.inode_type = crate::inode::TYPE_BASIC_DIR;
+        dir.file_size = u64::from(u32::MAX);
+
+        // The refusal comes from the device running out, not from the
+        // declared length -- and it comes back rather than hanging or
+        // allocating four gigabytes.
+        let why = format!("{:?}", fs.read_dir(&dir).err());
+        assert!(
+            !why.contains("longer than the filesystem"),
+            "a listing longer than the image was refused on its declared length: {why}"
+        );
+        assert!(why != "None", "a 4 GiB listing in a 64 KiB image succeeded");
     }
 
     #[test]
