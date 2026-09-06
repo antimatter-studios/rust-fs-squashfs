@@ -6,6 +6,16 @@ never does.
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-09-06
+
+### Fixed
+
+- The decompression ceiling is enforced before the memory is spent
+  rather than after: three decompressors checked the limit only once
+  they had already committed the allocation.
+- A directory listing and the running data-block offset are bounded, so
+  a crafted image cannot walk either past the end of what it declared.
+
 ## [0.1.4] — 2026-09-04
 
 ### Changed
