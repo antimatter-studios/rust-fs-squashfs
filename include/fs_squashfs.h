@@ -148,6 +148,51 @@ int64_t fs_squashfs_read_file(fs_squashfs_fs_t *fs, const char *path,
 int fs_squashfs_readlink(fs_squashfs_fs_t *fs, const char *path,
                          char *buf, size_t bufsize);
 
+/* ---- Extended attributes (read only) ---- */
+
+/*
+ * List extended attribute names for a path.
+ *
+ * Writes NUL-separated fully-qualified names ("user.colour\0user.tag\0")
+ * into buf. If buf is NULL or bufsize is 0, no bytes are written but the
+ * return value still reports the required total size -- use this to probe.
+ *
+ * Names come back assembled. SquashFS stores the namespace prefix as a
+ * small integer and the rest of the name after it; a caller does not have
+ * to know that.
+ *
+ * A path with no attributes returns 0, and so does every path in an image
+ * built with -no-xattrs. Neither is an error.
+ *
+ * Returns: total bytes of output (names + NUL terminators) on success,
+ *          -1 on error. If bufsize is less than the required size, writes
+ *          as many WHOLE names as fit and still returns the required size.
+ *
+ * Signature and semantics match fs_ext4_listxattr, so a layer above can
+ * treat the drivers alike.
+ */
+int64_t fs_squashfs_listxattr(fs_squashfs_fs_t *fs, const char *path,
+                              char *buf, size_t bufsize);
+
+/*
+ * Get one extended attribute value by fully-qualified name
+ * (e.g. "user.colour").
+ *
+ * Writes raw value bytes (no NUL terminator) into buf. If buf is NULL or
+ * bufsize is 0, returns the value size without writing -- use this to probe.
+ *
+ * A zero-length value is a real value and returns 0, which is NOT an
+ * error; an absent attribute returns -1 with ENOENT. Check the return
+ * against -1, not against 0.
+ *
+ * Returns: value size in bytes on success,
+ *          -1 if the name is not present or on error. If bufsize is less
+ *          than the value size, writes as much as fits and still returns
+ *          the value size.
+ */
+int64_t fs_squashfs_getxattr(fs_squashfs_fs_t *fs, const char *path,
+                             const char *name, void *buf, size_t bufsize);
+
 /* ---- Error reporting ---- */
 
 /* Last error message for the current thread (valid until next FFI call). */

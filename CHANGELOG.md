@@ -8,6 +8,25 @@ never does.
 
 ### Added
 
+- **Extended attributes can be read.** Every extended inode carried an
+  `xattr` index and every one of them threw it away, while the
+  superblock's `xattr_id_table_start` was parsed and never used again —
+  so the driver knew where the attributes were, and which set each inode
+  pointed at, and presented every file as having none. An image built
+  with `mksquashfs -xattrs`, the default since squashfs-tools 4.2, lost
+  everything a user had set.
+  - `Filesystem::list_xattrs` and `Filesystem::get_xattr` in Rust;
+    `fs_squashfs_listxattr` and `fs_squashfs_getxattr` on the C ABI, with
+    the signatures and semantics `fs_ext4_*` already has.
+  - Names come back assembled: SquashFS stores the namespace prefix as a
+    small integer and the rest of the name after it.
+  - Sets shared between inodes, and out-of-line values shared between
+    sets, both resolve — that indirection is what the id table is for.
+  - An image built with `-no-xattrs` reports an empty list rather than an
+    error, as does a file with no attributes in an image that has them.
+
+### Added
+
 - A cache of **decompressed** metadata blocks, keyed by their offset in
   the image. SquashFS keeps inodes and directory listings in 8 KiB
   compressed blocks; before this, every inode read and every listing put
