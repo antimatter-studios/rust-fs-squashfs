@@ -136,11 +136,57 @@ fn decompress_zlib(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// A `Write` sink that refuses to grow past a ceiling.
+///
+/// `xz_decompress`, `lzma_decompress` and `read_to_end` all decode into
+/// whatever sink they are given and stop when the stream says to. The
+/// stream says so on the strength of bytes off the disk, and the
+/// ceiling was tested only afterwards -- by which time the memory was
+/// already committed. Measured with `max_out` at 1 MiB: 312 KB of xz
+/// reached 3.3 GB resident over twelve seconds, and 131 KB of zstd
+/// reached 4.2 GB. A data block carries a 24-bit on-disk size, so a
+/// full-size one scales that to roughly 100 GB.
+///
+/// The limit is one byte past `max_out`, which leaves "longer than the
+/// block it fills" still detectable by the length check afterwards.
+///
+/// `decompress_zlib` and `decompress_lz4` next to these decode into a
+/// buffer already sized to `max_out` and never needed this.
+struct Capped {
+    buf: Vec<u8>,
+    limit: usize,
+}
+
+impl Capped {
+    fn holding(max_out: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(max_out.min(1 << 20)),
+            limit: max_out.saturating_add(1),
+        }
+    }
+}
+
+impl std::io::Write for Capped {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + data.len() > self.limit {
+            return Err(std::io::Error::other(
+                "decompressed block exceeds the block size",
+            ));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn decompress_xz(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(max_out.min(1 << 20));
+    let mut out = Capped::holding(max_out);
     let mut reader = BufReader::new(input);
     lzma_rs::xz_decompress(&mut reader, &mut out)
         .map_err(|_| Error::BadMetadata("xz decompression failed"))?;
+    let out = out.buf;
     if out.len() > max_out {
         return Err(Error::BadMetadata("decompressed block exceeds max size"));
     }
@@ -152,10 +198,11 @@ fn decompress_xz(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
 /// emitted this from very old `mksquashfs`; modern archives use xz. Decoded
 /// best-effort via `lzma_rs::lzma_decompress`.
 fn decompress_lzma_alone(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(max_out.min(1 << 20));
+    let mut out = Capped::holding(max_out);
     let mut reader = BufReader::new(input);
     lzma_rs::lzma_decompress(&mut reader, &mut out)
         .map_err(|_| Error::BadMetadata("lzma decompression failed"))?;
+    let out = out.buf;
     if out.len() > max_out {
         return Err(Error::BadMetadata("decompressed block exceeds max size"));
     }
@@ -173,10 +220,12 @@ fn decompress_lz4(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
 }
 
 fn decompress_zstd(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
-    let mut dec = ruzstd::decoding::StreamingDecoder::new(input)
+    let dec = ruzstd::decoding::StreamingDecoder::new(input)
         .map_err(|_| Error::BadMetadata("zstd frame decode init failed"))?;
     let mut out: Vec<u8> = Vec::with_capacity(max_out.min(1 << 20));
-    dec.read_to_end(&mut out)
+    // One byte past the block, and no further: see `Capped`.
+    dec.take(max_out.saturating_add(1) as u64)
+        .read_to_end(&mut out)
         .map_err(|_| Error::BadMetadata("zstd decompression failed"))?;
     if out.len() > max_out {
         return Err(Error::BadMetadata("decompressed block exceeds max size"));
@@ -196,6 +245,27 @@ mod tests {
         enc.compress(data, &mut out, FlushCompress::Finish).unwrap();
         out.truncate(enc.total_out() as usize);
         out
+    }
+
+    /// xz, lzma and zstd decode into a sink and stop when the stream
+    /// says to, and the stream says so on the strength of bytes off the
+    /// disk. The ceiling used to be tested only afterwards, by which
+    /// time the memory was committed: with `max_out` at 1 MiB, 312 KB
+    /// of xz reached 3.3 GB resident and 131 KB of zstd reached 4.2 GB.
+    #[test]
+    fn the_decode_sink_refuses_to_grow_past_the_block_it_fills() {
+        use std::io::Write;
+        let mut sink = Capped::holding(4);
+        // One byte past the block is still accepted, so the length
+        // check afterwards can report "exceeds max size" precisely.
+        assert!(sink.write(b"12345").is_ok());
+        assert_eq!(sink.buf.len(), 5);
+        assert!(sink.write(b"6").is_err(), "the sink grew past its limit");
+        assert_eq!(sink.buf.len(), 5, "the refused write was kept anyway");
+
+        let mut sink = Capped::holding(4);
+        assert!(sink.write(b"far too much").is_err());
+        assert!(sink.buf.is_empty());
     }
 
     #[test]

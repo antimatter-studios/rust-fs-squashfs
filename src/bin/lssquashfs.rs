@@ -92,6 +92,12 @@ fn cmd_tree(fs: &Filesystem, path: &str, depth: usize) {
     walk_tree(fs, &inode, path, depth);
 }
 
+/// How deep `tree` will follow directories.
+const MAX_TREE_DEPTH: usize = 256;
+
+/// The largest file `cat` will read into memory.
+const MAX_CAT_BYTES: u64 = 1 << 32;
+
 /// Print `inode`'s subtree.
 ///
 /// Takes the inode rather than the path, because the caller already has
@@ -104,6 +110,21 @@ fn cmd_tree(fs: &Filesystem, path: &str, depth: usize) {
 /// The path is still carried, but only to print names and to name a
 /// directory in an error — never to look anything up.
 fn walk_tree(fs: &Filesystem, inode: &Inode, path: &str, depth: usize) {
+    // A directory whose entry names an ancestor -- or itself -- makes
+    // this recurse until the stack runs out, which is a segfault rather
+    // than an error, and the printed path grows without bound on the
+    // way there. Nothing on disk stops an image saying that.
+    //
+    // The bound is depth rather than a visited set because a squashfs
+    // tree is a tree: a legitimate one is nowhere near this deep, and
+    // an image that is deeper than this is one nobody can usefully
+    // extract anyway.
+    if depth > MAX_TREE_DEPTH {
+        die(&format!(
+            "tree {path}: more than {MAX_TREE_DEPTH} directories deep -- \
+             a directory entry points back up its own tree"
+        ));
+    }
     if !inode.is_dir() {
         println!("{}{}", "  ".repeat(depth), basename(path));
         return;
@@ -133,6 +154,17 @@ fn cmd_cat(fs: &Filesystem, path: &str) {
     let inode = lookup(fs, path);
     if !inode.is_regular_file() {
         die(&format!("cat {path}: not a regular file"));
+    }
+    // `file_size` is a raw u64 for an extended file inode, and this
+    // allocated it before reading a byte -- the same abort primitive
+    // the library's own readers are careful about. Printing a file
+    // larger than this to a terminal is not a thing anyone wants
+    // anyway.
+    if inode.file_size > MAX_CAT_BYTES {
+        die(&format!(
+            "cat {path}: file declares {} bytes, more than this will print",
+            inode.file_size
+        ));
     }
     let mut buf = vec![0u8; inode.file_size as usize];
     let n = fs

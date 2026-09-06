@@ -68,11 +68,36 @@ fn read_indirect_table<R: BlockRead + ?Sized>(
         return Ok(Vec::new());
     }
     let n_blocks = total_bytes.div_ceil(METADATA_SIZE);
-    // The pointer array is raw u64s on disk, immediately at table_start.
-    let mut ptr_bytes = vec![0u8; n_blocks * 8];
+    // THE POINTER ARRAY HAS TO FIT WHERE IT SAYS IT IS.
+    //
+    // `total_bytes` is an entry count off the superblock multiplied by
+    // an entry size, and the fragment count is a `u32`: 0xFFFFFFFF asks
+    // for a 64 MiB pointer array and a 64 MiB read, unconditionally, on
+    // every mount, from a 96-byte header. Filled with valid metablock
+    // pointers it is worse -- a 4.2 MB image mounted at 1.99 GB
+    // resident, memory that then stays held in the filesystem.
+    //
+    // The array is raw u64s starting at `table_start`, so it has to fit
+    // between there and the end of the filesystem. That is the same
+    // rule the kernel applies to its own index tables.
+    let array_bytes = n_blocks
+        .checked_mul(8)
+        .ok_or(Error::BadMetadata("indirect table pointer array overflows"))?;
+    let room = sb
+        .bytes_used
+        .min(dev.size_bytes())
+        .saturating_sub(table_start);
+    if array_bytes as u64 > room {
+        return Err(Error::BadMetadata(
+            "indirect table declares more blocks than it has room for",
+        ));
+    }
+    let mut ptr_bytes = vec![0u8; array_bytes];
     dev.read_at(table_start, &mut ptr_bytes)?;
 
-    let mut out = Vec::with_capacity(total_bytes);
+    // Capped, because `total_bytes` is still whatever the count said;
+    // the vector grows to what is actually decoded.
+    let mut out = Vec::with_capacity(total_bytes.min(1 << 20));
     for i in 0..n_blocks {
         let p = u64::from_le_bytes(ptr_bytes[i * 8..i * 8 + 8].try_into().unwrap());
         let (block, _next) = read_block(dev, sb, p)?;
@@ -138,6 +163,34 @@ mod tests {
         assert!(!data_is_compressed(raw));
         // Sparse block: size word 0.
         assert_eq!(data_on_disk_size(0), 0);
+    }
+
+    /// `read_fragment_table` runs unconditionally at mount, and its
+    /// size comes from a `u32` in the superblock. 0xFFFFFFFF asked for
+    /// a 64 MiB pointer array and a 64 MiB read from a 96-byte header.
+    ///
+    /// The assertion is on *which* refusal: the read comes up short
+    /// either way, but only after the buffer has been allocated.
+    #[test]
+    fn a_fragment_table_with_no_room_for_its_pointers_is_refused_by_name() {
+        use crate::metablock::tests::MemDev;
+        use crate::superblock::tests::synth_sb;
+        use std::sync::Mutex;
+
+        let mut raw = synth_sb(17, 0, 96);
+        raw[0x10..0x14].copy_from_slice(&u32::MAX.to_le_bytes()); // fragment_entry_count
+        raw[0x28..0x30].copy_from_slice(&4000u64.to_le_bytes()); // bytes_used
+        raw[0x50..0x58].copy_from_slice(&96u64.to_le_bytes()); // fragment_table_start
+        let sb = Superblock::parse(&raw).unwrap();
+        assert_eq!(sb.fragment_entry_count, u32::MAX);
+
+        let dev = MemDev(Mutex::new(vec![0u8; 4000]));
+        let why = format!("{:?}", read_fragment_table(&dev, &sb).err());
+        assert!(
+            why.contains("more blocks than it has room for"),
+            "a 64 MiB fragment table in a 4000-byte image was refused as {why}, \
+             which means the buffer was allocated and read first"
+        );
     }
 
     #[test]
