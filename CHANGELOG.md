@@ -6,6 +6,26 @@ never does.
 
 ## [Unreleased]
 
+### Added
+
+- A cache of **decompressed** metadata blocks, keyed by their offset in
+  the image. SquashFS keeps inodes and directory listings in 8 KiB
+  compressed blocks; before this, every inode read and every listing put
+  the block it lives in through the codec again. On the fixture in
+  `tests/read_path_cost.rs` a directory walk fell from 18.5 ms to
+  0.45 ms and resolving 216 paths from 14.6 ms to 0.31 ms, with the
+  device reads unchanged at zero — three metadata blocks had been
+  decompressed 4976 times. Size it with
+  `Filesystem::set_meta_cache_capacity` (zero disables it); the default
+  holds 256 blocks, 2 MiB.
+
+### Changed
+
+- `metablock::read_block`, `metablock::MetaCursor::new` and
+  `Inode::read` take the cache to consult (`None` for none), and
+  `read_block` hands back a shared `Arc<Vec<u8>>` rather than a fresh
+  `Vec`. Callers going through `Filesystem` are unaffected.
+
 ## [0.1.5] — 2026-09-06
 
 ### Fixed

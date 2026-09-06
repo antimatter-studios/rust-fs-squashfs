@@ -11,11 +11,17 @@
 //! A single inode or directory record can straddle a metadata-block
 //! boundary, so [`MetaCursor`] presents a flat byte stream that pulls and
 //! decompresses successive metadata blocks on demand.
+//!
+//! [`MetaCache`] holds the *decompressed* result of that work, so the
+//! second read of a block skips the codec as well as the device.
 
 use crate::decompress;
 use crate::error::{Error, Result};
 use crate::superblock::{Superblock, METADATA_SIZE};
 use fs_core::BlockRead;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 /// Set means the block is stored UNCOMPRESSED.
 ///
@@ -25,10 +31,140 @@ use fs_core::BlockRead;
 const UNCOMPRESSED_BIT: u16 = 0x8000;
 const SIZE_MASK: u16 = 0x7FFF;
 
+/// One decompressed metadata block, plus where the next one starts.
+///
+/// The successor offset is cached alongside the bytes because it is not
+/// derivable from them: it depends on the block's *on-disk* length, which
+/// is in the 2-byte header a cache hit never reads.
+#[derive(Clone)]
+struct CachedBlock {
+    /// Shared so a hit hands out the bytes without copying them.
+    bytes: Arc<Vec<u8>>,
+    next_abs: u64,
+}
+
+/// A cache of **decompressed** metadata blocks, keyed by the absolute
+/// offset of the block's 2-byte header.
+///
+/// # Why this exists above the codec and not below it
+///
+/// A block cache under the driver (`fs_core::CachingDevice`) removes the
+/// device reads and nothing else: the same 8 KiB of gzip is handed to the
+/// decompressor again on every access. Measured on the fixture in
+/// `tests/read_path_cost.rs`, taking the device reads to *zero* moved the
+/// wall clock by nine percent. The read path is not I/O-bound, it is
+/// bound by decompression, and only a cache that holds the decompressed
+/// bytes can touch that.
+///
+/// # Why there is no invalidation
+///
+/// SquashFS is a read-only archive. The bytes at a given offset cannot
+/// change while the image is mounted, so an entry can never go stale and
+/// the key can be the offset alone. That is a real simplification over
+/// the equivalent cache in a writable driver, and it is a property of the
+/// format rather than an assumption being made here.
+pub struct MetaCache {
+    inner: Mutex<CacheInner>,
+}
+
+struct CacheInner {
+    /// `None` when the capacity is zero, i.e. caching is switched off.
+    /// Kept inside the same mutex as the counters so the disabled state
+    /// costs a lock and nothing more.
+    lru: Option<LruCache<u64, CachedBlock>>,
+    hits: u64,
+    misses: u64,
+}
+
+impl MetaCache {
+    /// A cache holding at most `capacity` decompressed blocks. Zero
+    /// disables it entirely, which is how the baseline pass in
+    /// `tests/read_path_cost.rs` measures the cost of not having one.
+    pub fn new(capacity: usize) -> Self {
+        MetaCache {
+            inner: Mutex::new(CacheInner {
+                lru: NonZeroUsize::new(capacity).map(LruCache::new),
+                hits: 0,
+                misses: 0,
+            }),
+        }
+    }
+
+    /// Resize (or disable, at zero). Drops whatever was held, and
+    /// restarts the counters: a hit rate averaged over two different
+    /// capacities describes neither of them.
+    pub fn set_capacity(&self, capacity: usize) {
+        let mut g = self.inner.lock().expect("metadata cache lock");
+        g.lru = NonZeroUsize::new(capacity).map(LruCache::new);
+        g.hits = 0;
+        g.misses = 0;
+    }
+
+    /// `(entries, capacity, hits, misses)`, for tests and diagnostics.
+    pub fn stats(&self) -> (usize, usize, u64, u64) {
+        let g = self.inner.lock().expect("metadata cache lock");
+        let (entries, capacity) = match &g.lru {
+            Some(lru) => (lru.len(), lru.cap().get()),
+            None => (0, 0),
+        };
+        (entries, capacity, g.hits, g.misses)
+    }
+
+    /// A hit bumps the LRU recency; a miss is only counted when caching
+    /// is actually live, so a disabled cache does not report a 0% hit
+    /// rate over reads it was never asked about.
+    fn get(&self, abs: u64) -> Option<CachedBlock> {
+        let mut g = self.inner.lock().expect("metadata cache lock");
+        let lru = g.lru.as_mut()?;
+        match lru.get(&abs) {
+            Some(hit) => {
+                let hit = hit.clone();
+                g.hits += 1;
+                Some(hit)
+            }
+            None => {
+                g.misses += 1;
+                None
+            }
+        }
+    }
+
+    fn insert(&self, abs: u64, block: CachedBlock) {
+        let mut g = self.inner.lock().expect("metadata cache lock");
+        if let Some(lru) = g.lru.as_mut() {
+            lru.put(abs, block);
+        }
+    }
+}
+
 /// Read + decompress one metadata block whose 2-byte header sits at
 /// absolute byte offset `abs`. Returns the decompressed payload and the
 /// absolute offset of the *next* metadata block.
+///
+/// With a `cache`, a block already decompressed comes back without
+/// touching either the device or the codec.
 pub fn read_block<R: BlockRead + ?Sized>(
+    dev: &R,
+    sb: &Superblock,
+    abs: u64,
+    cache: Option<&MetaCache>,
+) -> Result<(Arc<Vec<u8>>, u64)> {
+    if let Some(hit) = cache.and_then(|c| c.get(abs)) {
+        return Ok((hit.bytes, hit.next_abs));
+    }
+    let (bytes, next_abs) = read_block_uncached(dev, sb, abs)?;
+    let block = CachedBlock {
+        bytes: Arc::new(bytes),
+        next_abs,
+    };
+    if let Some(cache) = cache {
+        cache.insert(abs, block.clone());
+    }
+    Ok((block.bytes, next_abs))
+}
+
+/// The decompression itself, with no cache in front of it.
+fn read_block_uncached<R: BlockRead + ?Sized>(
     dev: &R,
     sb: &Superblock,
     abs: u64,
@@ -96,13 +232,42 @@ impl MetadataRef {
     }
 }
 
+/// The cursor's window onto decompressed metadata.
+///
+/// Nearly every cursor reads a few tens of bytes out of one 8 KiB block
+/// and stops — an inode is small and a metablock is not. Such a cursor
+/// borrows the cached block as it stands. Copying it into a private
+/// buffer first would put an 8 KiB memcpy in front of every inode read,
+/// which is exactly the kind of per-access cost this cache exists to
+/// remove; it would not be visible in the device-read column and would
+/// quietly eat part of the win in the wall-clock one.
+///
+/// Only a record straddling a block boundary needs bytes of its own, and
+/// that is what [`Window::Spliced`] is for.
+enum Window {
+    /// One cached block, shared rather than copied.
+    Whole(Arc<Vec<u8>>),
+    /// The tail of one block followed by whole blocks after it.
+    Spliced(Vec<u8>),
+}
+
+impl Window {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Window::Whole(b) => b,
+            Window::Spliced(b) => b,
+        }
+    }
+}
+
 pub struct MetaCursor<'a, R: BlockRead + ?Sized> {
     dev: &'a R,
     sb: &'a Superblock,
+    cache: Option<&'a MetaCache>,
     /// Absolute offset of the NEXT metadata block to pull.
     next_abs: u64,
     /// Decompressed bytes accumulated so far, minus what's been consumed.
-    buf: Vec<u8>,
+    buf: Window,
     /// Read cursor within `buf`.
     pos: usize,
 }
@@ -112,8 +277,19 @@ impl<'a, R: BlockRead + ?Sized> MetaCursor<'a, R> {
     /// `start_abs`, positioned `in_block` bytes into that decompressed
     /// block (this is exactly how a SquashFS metadata reference decodes:
     /// `start_abs = table_start + (ref >> 16)`, `in_block = ref & 0xFFFF`).
-    pub fn new(dev: &'a R, sb: &'a Superblock, start_abs: u64, in_block: u16) -> Result<Self> {
-        let (block, next) = read_block(dev, sb, start_abs)?;
+    ///
+    /// `cache`, when given, is consulted here and on every refill. This
+    /// is the one place worth putting it: every metadata read in the
+    /// crate — inodes, directory listings — arrives through this
+    /// constructor.
+    pub fn new(
+        dev: &'a R,
+        sb: &'a Superblock,
+        start_abs: u64,
+        in_block: u16,
+        cache: Option<&'a MetaCache>,
+    ) -> Result<Self> {
+        let (block, next) = read_block(dev, sb, start_abs, cache)?;
         if in_block as usize > block.len() {
             return Err(Error::BadMetadata(
                 "metadata reference offset past block end",
@@ -122,25 +298,35 @@ impl<'a, R: BlockRead + ?Sized> MetaCursor<'a, R> {
         Ok(MetaCursor {
             dev,
             sb,
+            cache,
             next_abs: next,
-            buf: block,
+            buf: Window::Whole(block),
             pos: in_block as usize,
         })
     }
 
     /// Pull one more metadata block onto the tail of `buf`.
     fn refill(&mut self) -> Result<()> {
-        let (block, next) = read_block(self.dev, self.sb, self.next_abs)?;
+        let (block, next) = read_block(self.dev, self.sb, self.next_abs, self.cache)?;
         if block.is_empty() {
             return Err(Error::BadMetadata(
                 "empty metadata block while reading record",
             ));
         }
         // Drop already-consumed bytes to keep the buffer bounded, then
-        // append the freshly-decompressed block.
-        self.buf.drain(..self.pos);
+        // append the freshly-decompressed block. Crossing a boundary is
+        // where the cursor stops being able to share a cached block, so
+        // this is also where the window becomes its own.
+        let mut spliced = match std::mem::replace(&mut self.buf, Window::Spliced(Vec::new())) {
+            Window::Whole(b) => b[self.pos..].to_vec(),
+            Window::Spliced(mut b) => {
+                b.drain(..self.pos);
+                b
+            }
+        };
         self.pos = 0;
-        self.buf.extend_from_slice(&block);
+        spliced.extend_from_slice(&block);
+        self.buf = Window::Spliced(spliced);
         self.next_abs = next;
         Ok(())
     }
@@ -148,7 +334,7 @@ impl<'a, R: BlockRead + ?Sized> MetaCursor<'a, R> {
     /// Ensure at least `n` unread bytes are available, pulling blocks as
     /// needed.
     fn ensure(&mut self, n: usize) -> Result<()> {
-        while self.buf.len() - self.pos < n {
+        while self.buf.bytes().len() - self.pos < n {
             self.refill()?;
         }
         Ok(())
@@ -157,7 +343,7 @@ impl<'a, R: BlockRead + ?Sized> MetaCursor<'a, R> {
     /// Read exactly `n` bytes, advancing the cursor.
     pub fn read_exact(&mut self, n: usize) -> Result<Vec<u8>> {
         self.ensure(n)?;
-        let out = self.buf[self.pos..self.pos + n].to_vec();
+        let out = self.buf.bytes()[self.pos..self.pos + n].to_vec();
         self.pos += n;
         Ok(out)
     }
@@ -245,8 +431,8 @@ pub(crate) mod tests {
         let payload = b"the quick brown fox".repeat(20);
         let img = emit_meta(&payload);
         let dev = MemDev(Mutex::new(img.clone()));
-        let (out, next) = read_block(&dev, &sb(), 0).unwrap();
-        assert_eq!(out, payload);
+        let (out, next) = read_block(&dev, &sb(), 0, None).unwrap();
+        assert_eq!(*out, payload);
         assert_eq!(next as usize, img.len());
     }
 
@@ -255,8 +441,8 @@ pub(crate) mod tests {
         let payload = b"raw bytes";
         let img = emit_meta_raw(payload);
         let dev = MemDev(Mutex::new(img));
-        let (out, _next) = read_block(&dev, &sb(), 0).unwrap();
-        assert_eq!(out, payload);
+        let (out, _next) = read_block(&dev, &sb(), 0, None).unwrap();
+        assert_eq!(out.as_slice(), payload);
     }
 
     #[test]
@@ -272,7 +458,7 @@ pub(crate) mod tests {
         img.extend_from_slice(&emit_meta(&second));
         let dev = MemDev(Mutex::new(img));
         let s = sb();
-        let mut cur = MetaCursor::new(&dev, &s, 0, 98).unwrap();
+        let mut cur = MetaCursor::new(&dev, &s, 0, 98, None).unwrap();
         // Read 4 bytes starting 98 into block 0: 2 from block 0 (0xAA),
         // then 2 from block 1 (0xCC, 0xBB).
         let got = cur.read_exact(4).unwrap();
@@ -284,9 +470,185 @@ pub(crate) mod tests {
         let img = vec![0u8, 0u8]; // size 0
         let dev = MemDev(Mutex::new(img));
         assert!(matches!(
-            read_block(&dev, &sb(), 0),
+            read_block(&dev, &sb(), 0, None),
             Err(Error::BadMetadata(_))
         ));
+    }
+
+    /// A device that counts what it is asked for, so a test can say
+    /// "and this time nothing reached the disk" rather than inferring it.
+    struct CountingMem {
+        inner: MemDev,
+        reads: Mutex<u64>,
+    }
+
+    impl CountingMem {
+        fn new(bytes: Vec<u8>) -> Self {
+            CountingMem {
+                inner: MemDev(Mutex::new(bytes)),
+                reads: Mutex::new(0),
+            }
+        }
+        fn reads(&self) -> u64 {
+            *self.reads.lock().unwrap()
+        }
+    }
+
+    impl BlockRead for CountingMem {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+            *self.reads.lock().unwrap() += 1;
+            self.inner.read_at(offset, buf)
+        }
+        fn size_bytes(&self) -> u64 {
+            self.inner.size_bytes()
+        }
+    }
+
+    /// Two metadata blocks back to back, and where the second starts.
+    fn two_blocks() -> (Vec<u8>, Vec<u8>, Vec<u8>, u64) {
+        let first = b"first block payload".repeat(11);
+        let second = b"second block payload".repeat(13);
+        let mut img = emit_meta(&first);
+        let second_abs = img.len() as u64;
+        img.extend_from_slice(&emit_meta(&second));
+        (img, first, second, second_abs)
+    }
+
+    #[test]
+    fn a_second_read_of_the_same_block_touches_neither_device_nor_codec() {
+        let (img, first, _second, _) = two_blocks();
+        let dev = CountingMem::new(img);
+        let cache = MetaCache::new(8);
+
+        let (a, next_a) = read_block(&dev, &sb(), 0, Some(&cache)).unwrap();
+        let after_first = dev.reads();
+        assert!(after_first > 0, "the first read must reach the device");
+
+        let (b, next_b) = read_block(&dev, &sb(), 0, Some(&cache)).unwrap();
+        assert_eq!(
+            dev.reads(),
+            after_first,
+            "the second read reached the device"
+        );
+        assert_eq!(*b, first, "the cached bytes are not the block's bytes");
+        // The successor offset is NOT derivable from the decompressed
+        // bytes -- it comes from the on-disk length in the 2-byte header,
+        // which a hit never reads. Getting it wrong would send the next
+        // refill to the wrong place, and only a cursor spanning a
+        // boundary would ever notice.
+        assert_eq!(next_b, next_a, "the cached successor offset is wrong");
+        // Shared, not copied: a hit hands out the same allocation.
+        assert!(Arc::ptr_eq(&a, &b));
+
+        let (_, _, hits, misses) = cache.stats();
+        assert_eq!((hits, misses), (1, 1));
+    }
+
+    #[test]
+    fn a_disabled_cache_decompresses_every_time() {
+        let (img, first, _second, _) = two_blocks();
+        let dev = CountingMem::new(img);
+        let cache = MetaCache::new(0);
+
+        let (a, _) = read_block(&dev, &sb(), 0, Some(&cache)).unwrap();
+        let after_first = dev.reads();
+        let (b, _) = read_block(&dev, &sb(), 0, Some(&cache)).unwrap();
+
+        assert_eq!(*a, first);
+        assert_eq!(*b, first);
+        assert!(dev.reads() > after_first, "a disabled cache served a hit");
+        // A disabled cache reports nothing rather than a 0% hit rate over
+        // reads it was never consulted about.
+        assert_eq!(cache.stats(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn the_cache_evicts_at_capacity() {
+        let (img, _first, _second, second_abs) = two_blocks();
+        let dev = CountingMem::new(img);
+        let cache = MetaCache::new(1);
+
+        // Alternating between two blocks with room for one: the entry
+        // put in by each read is the one the next read evicts, so every
+        // read is a miss.
+        for _ in 0..3 {
+            read_block(&dev, &sb(), 0, Some(&cache)).unwrap();
+            read_block(&dev, &sb(), second_abs, Some(&cache)).unwrap();
+        }
+        let (entries, capacity, hits, misses) = cache.stats();
+        assert_eq!((entries, capacity), (1, 1));
+        assert_eq!(hits, 0, "an entry survived past the capacity");
+        assert_eq!(misses, 6);
+    }
+
+    #[test]
+    fn set_capacity_to_zero_switches_it_off_and_drops_what_it_held() {
+        let (img, _first, _second, _) = two_blocks();
+        let dev = CountingMem::new(img);
+        let cache = MetaCache::new(8);
+        read_block(&dev, &sb(), 0, Some(&cache)).unwrap();
+        assert_eq!(cache.stats().0, 1);
+
+        // Resizing restarts the counters as well as dropping the
+        // entries: a hit rate averaged over two capacities is a number
+        // about neither of them.
+        cache.set_capacity(0);
+        assert_eq!(cache.stats(), (0, 0, 0, 0));
+        let before = dev.reads();
+        read_block(&dev, &sb(), 0, Some(&cache)).unwrap();
+        assert!(dev.reads() > before, "a switched-off cache still served");
+    }
+
+    /// The cache changes how the cursor holds its bytes -- one block is
+    /// borrowed from the cache, a record spanning two gets a buffer of
+    /// its own -- so the spanning case has to give the same answer with
+    /// the cache on as with it off.
+    #[test]
+    fn a_record_spanning_a_boundary_reads_the_same_cached_or_not() {
+        let first = vec![0xAAu8; 100];
+        let second = {
+            let mut v = vec![0xBBu8; 100];
+            v[0] = 0xCC;
+            v
+        };
+        let mut img = emit_meta(&first);
+        img.extend_from_slice(&emit_meta(&second));
+        let dev = MemDev(Mutex::new(img));
+        let s = sb();
+        let cache = MetaCache::new(8);
+
+        let mut cold = MetaCursor::new(&dev, &s, 0, 98, Some(&cache)).unwrap();
+        let cold = cold.read_exact(4).unwrap();
+        // Second time round both blocks are already in the cache, which
+        // is the path where the cursor splices a borrowed block onto a
+        // fresh one.
+        let mut warm = MetaCursor::new(&dev, &s, 0, 98, Some(&cache)).unwrap();
+        let warm = warm.read_exact(4).unwrap();
+
+        assert_eq!(cold, vec![0xAA, 0xAA, 0xCC, 0xBB]);
+        assert_eq!(warm, cold);
+    }
+
+    /// Reading a long record pulls block after block. Each one must be
+    /// spliced on whole: an off-by-one in the drain would corrupt the
+    /// seam, and a short record would never notice.
+    #[test]
+    fn a_record_spanning_three_blocks_comes_back_byte_for_byte() {
+        let blocks: Vec<Vec<u8>> = (0u8..3).map(|i| vec![0x10 + i; 200]).collect();
+        let mut img = Vec::new();
+        for b in &blocks {
+            img.extend_from_slice(&emit_meta(b));
+        }
+        let dev = MemDev(Mutex::new(img));
+        let s = sb();
+        let cache = MetaCache::new(8);
+
+        let want: Vec<u8> = blocks.concat()[50..].to_vec();
+        for pass in 0..2 {
+            let mut cur = MetaCursor::new(&dev, &s, 0, 50, Some(&cache)).unwrap();
+            let got = cur.read_exact(want.len()).unwrap();
+            assert_eq!(got, want, "pass {pass}");
+        }
     }
 }
 

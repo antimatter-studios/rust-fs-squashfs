@@ -94,11 +94,22 @@ fn fixture_tree() -> Node {
 
 /// The counter sits BELOW the cache, so what it reports is what
 /// actually reached the device rather than what the driver asked for.
-/// `blocks` of zero opens without a cache, which is the baseline.
-fn open_counting(img: &Path, blocks: usize) -> (Filesystem, Arc<CountingDevice>) {
+///
+/// The two caches are sized independently because they answer different
+/// questions and the whole point of the measurement is to tell them
+/// apart: `blocks` is the archive's own blocks as they sit on disk, and
+/// removes device reads; `meta_blocks` is metadata blocks after the
+/// codec has run, and removes decompression. Zero disables either.
+fn open_counting(
+    img: &Path,
+    blocks: usize,
+    meta_blocks: usize,
+) -> (Filesystem, Arc<CountingDevice>) {
     let file = FileDevice::open(img).expect("open the fixture");
     let counting = Arc::new(CountingDevice::new(Arc::new(file)));
-    let fs = Filesystem::open_with_cache(counting.clone(), blocks).expect("open");
+    let fs = Filesystem::open_with_cache(counting.clone(), blocks)
+        .expect("open")
+        .with_meta_cache_capacity(meta_blocks);
     (fs, counting)
 }
 
@@ -180,9 +191,15 @@ fn what_a_read_costs_in_calls_to_the_device() {
     );
 
     eprintln!("--- uncached ---");
-    let uncached = measure_one(&image.path, 0);
-    eprintln!("--- cached ---");
-    let cached = measure_one(&image.path, fs_squashfs::fs::DEFAULT_CACHE_BLOCKS);
+    let uncached = measure_one(&image.path, 0, 0);
+    eprintln!("--- block cache only ---");
+    let cached = measure_one(&image.path, fs_squashfs::fs::DEFAULT_CACHE_BLOCKS, 0);
+    eprintln!("--- block cache + decompressed-metadata cache ---");
+    let both = measure_one(
+        &image.path,
+        fs_squashfs::fs::DEFAULT_CACHE_BLOCKS,
+        fs_squashfs::fs::DEFAULT_META_CACHE_BLOCKS,
+    );
 
     // THE ASSERTIONS ARE ON THE UNCACHED PASS, because it is the one
     // that must reach the device: if the counter reports nothing there,
@@ -197,27 +214,44 @@ fn what_a_read_costs_in_calls_to_the_device() {
         uncached.walk.reads > 0 && uncached.stat.reads > 0,
         "no calls reached the device, so the counter is not wired to the mount"
     );
-    for (what, un, ca) in [
-        ("walk", &uncached.walk, &cached.walk),
-        ("stat", &uncached.stat, &cached.stat),
-        ("read", &uncached.read, &cached.read),
+    for (what, un, ca, bo) in [
+        ("walk", &uncached.walk, &cached.walk, &both.walk),
+        ("stat", &uncached.stat, &cached.stat, &both.stat),
+        ("read", &uncached.read, &cached.read, &both.read),
     ] {
-        assert!(
-            ca.reads <= un.reads,
-            "{what}: the cache made it ask for more ({} vs {})",
-            ca.reads,
-            un.reads
-        );
-        assert_eq!(
-            ca.items, un.items,
-            "{what}: the two passes did different amounts of work, so the \
-             figures are not comparable"
-        );
+        for (label, c) in [("block cache", ca), ("both caches", bo)] {
+            assert!(
+                c.reads <= un.reads,
+                "{what}: the {label} made it ask for more ({} vs {})",
+                c.reads,
+                un.reads
+            );
+            assert_eq!(
+                c.items, un.items,
+                "{what}: the {label} pass did a different amount of work \
+                 from the baseline, so the figures are not comparable"
+            );
+        }
     }
+
+    // THE ONLY WALL-CLOCK ASSERTION, and it is a loose one. Times are
+    // noisy and this suite refuses to assert on them — except here,
+    // where the whole claim being made is that skipping the codec is
+    // faster than running it. Half again is far below what was measured
+    // (the stat pass fell by more than three quarters) and well outside
+    // the run-to-run spread, so this fails when the cache stops working
+    // rather than when the machine is busy.
+    assert!(
+        both.stat.micros * 3 < cached.stat.micros * 2,
+        "the decompressed-metadata cache barely moved the stat pass: \
+         {} µs against {} µs with only the block cache",
+        both.stat.micros,
+        cached.stat.micros
+    );
 }
 
-fn measure_one(img: &Path, blocks: usize) -> Pass {
-    let (fs, counting) = open_counting(img, blocks);
+fn measure_one(img: &Path, blocks: usize, meta_blocks: usize) -> Pass {
+    let (fs, counting) = open_counting(img, blocks, meta_blocks);
 
     let mut paths = Vec::new();
     let walk = measure(&counting, 0, || walk_paths(&fs, "/", 8, &mut paths));
@@ -252,6 +286,12 @@ fn measure_one(img: &Path, blocks: usize) -> Pass {
         }
     });
     report("read", &read);
+
+    let (entries, capacity, hits, misses) = fs.meta_cache_stats();
+    eprintln!(
+        "       metadata cache: {entries}/{capacity} blocks, {hits} hits, \
+         {misses} misses"
+    );
 
     Pass { walk, stat, read }
 }

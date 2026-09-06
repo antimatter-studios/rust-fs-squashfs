@@ -9,7 +9,7 @@
 //! Field layouts mirror `squashfs_fs.h` (`squashfs_*_inode` structs).
 
 use crate::error::{Error, Result};
-use crate::metablock::MetaCursor;
+use crate::metablock::{MetaCache, MetaCursor};
 use crate::superblock::{Superblock, SQUASHFS_INVALID_FRAG};
 use fs_core::BlockRead;
 
@@ -159,11 +159,21 @@ impl Inode {
     /// Read + parse the inode at the given metadata reference.
     /// `inode_ref` high 48 bits = metadata-block offset relative to
     /// `inode_table_start`; low 16 bits = offset within that block.
-    pub fn read<R: BlockRead + ?Sized>(dev: &R, sb: &Superblock, inode_ref: u64) -> Result<Inode> {
+    ///
+    /// `cache`, when given, spares the metadata block holding this inode
+    /// from being decompressed again. Resolving a path reads one inode
+    /// per component, and the blocks near the root are read by every
+    /// path there is, so this is where a hit is most likely.
+    pub fn read<R: BlockRead + ?Sized>(
+        dev: &R,
+        sb: &Superblock,
+        inode_ref: u64,
+        cache: Option<&MetaCache>,
+    ) -> Result<Inode> {
         let r = crate::metablock::MetadataRef::from_packed(inode_ref);
         let start_abs = r.start_abs(sb.inode_table_start);
         let in_block = r.in_block;
-        let mut cur = MetaCursor::new(dev, sb, start_abs, in_block)?;
+        let mut cur = MetaCursor::new(dev, sb, start_abs, in_block, cache)?;
 
         // ----- 16-byte common header -----
         let inode_type = cur.read_u16()?;

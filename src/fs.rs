@@ -12,7 +12,7 @@ use crate::decompress::{self, Compressor};
 use crate::dir::{self, DirEntry};
 use crate::error::{Error, Result};
 use crate::inode::Inode;
-use crate::metablock::MetaCursor;
+use crate::metablock::{MetaCache, MetaCursor};
 use crate::superblock::{self, Superblock};
 use crate::table::{self, FragmentEntry};
 use fs_core::BlockRead;
@@ -31,6 +31,21 @@ use fs_core::BlockRead;
 /// reverse.
 pub const DEFAULT_CACHE_BLOCKS: usize = 32;
 
+/// How many **decompressed** metadata blocks a mount holds.
+///
+/// A different cache from the one above, sized in a different unit and
+/// holding a different thing. That one holds the archive's blocks as
+/// they sit on disk — still compressed — and 32 of them is megabytes.
+/// This one holds metadata blocks *after* the codec has run, and a
+/// metadata block decompresses to at most 8 KiB, so 256 of them is
+/// 2 MiB.
+///
+/// 2 MiB is a lot of metadata: an image with tens of thousands of files
+/// has a metadata table measured in low megabytes in total, and the
+/// blocks a walk returns to are far fewer than that. The measurement in
+/// `docs/read-path-cost.md` was taken at this value.
+pub const DEFAULT_META_CACHE_BLOCKS: usize = 256;
+
 pub struct Filesystem {
     dev: Arc<dyn BlockRead>,
     pub sb: Superblock,
@@ -39,6 +54,13 @@ pub struct Filesystem {
     id_table: Vec<u32>,
     /// Fragment table — a file's `fragment_index` indexes into this.
     fragments: Vec<FragmentEntry>,
+    /// Decompressed metadata blocks, keyed by their offset in the image.
+    ///
+    /// The block cache under `dev` stops the device being asked twice
+    /// for the same bytes; this stops the codec being run twice over
+    /// them. Both are needed, and this is the one that moves the clock:
+    /// see `docs/read-path-cost.md`.
+    meta_cache: MetaCache,
 }
 
 impl Filesystem {
@@ -69,6 +91,15 @@ impl Filesystem {
     ///
     /// `blocks` of zero disables it, which is what the measurement in
     /// `tests/read_path_cost.rs` uses to take its baseline.
+    ///
+    /// # This is not the only cache
+    ///
+    /// `blocks` sizes the cache of the archive's blocks *as they sit on
+    /// disk*, and it is the one that removes device reads. The mount
+    /// also holds [`DEFAULT_META_CACHE_BLOCKS`] metadata blocks after
+    /// decompression, and that is the one that removes codec work; see
+    /// [`Filesystem::set_meta_cache_capacity`] to size or disable it.
+    /// Zero here does not disable that one.
     pub fn open_with_cache(dev: Arc<dyn BlockRead>, blocks: usize) -> Result<Self> {
         let dev: Arc<dyn BlockRead> = if blocks == 0 {
             dev
@@ -100,7 +131,27 @@ impl Filesystem {
             comp,
             id_table,
             fragments,
+            meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
         })
+    }
+
+    /// Resize the decompressed-metadata cache, as a builder. Zero
+    /// switches it off.
+    pub fn with_meta_cache_capacity(self, blocks: usize) -> Self {
+        self.set_meta_cache_capacity(blocks);
+        self
+    }
+
+    /// Resize the decompressed-metadata cache in place. Zero switches it
+    /// off; anything already held is dropped either way.
+    pub fn set_meta_cache_capacity(&self, blocks: usize) {
+        self.meta_cache.set_capacity(blocks);
+    }
+
+    /// `(entries, capacity, hits, misses)` for the decompressed-metadata
+    /// cache. A miss is one metadata block put through the codec.
+    pub fn meta_cache_stats(&self) -> (usize, usize, u64, u64) {
+        self.meta_cache.stats()
     }
 
     /// The archive-wide compressor.
@@ -118,7 +169,7 @@ impl Filesystem {
     }
 
     pub fn read_inode(&self, inode_ref: u64) -> Result<Inode> {
-        Inode::read(&*self.dev, &self.sb, inode_ref)
+        Inode::read(&*self.dev, &self.sb, inode_ref, Some(&self.meta_cache))
     }
 
     pub fn root_inode(&self) -> Result<Inode> {
@@ -144,7 +195,13 @@ impl Filesystem {
             return Ok(Vec::new());
         }
         let start_abs = self.sb.directory_table_start + inode.dir_start_block as u64;
-        let mut cur = MetaCursor::new(&*self.dev, &self.sb, start_abs, inode.dir_block_offset)?;
+        let mut cur = MetaCursor::new(
+            &*self.dev,
+            &self.sb,
+            start_abs,
+            inode.dir_block_offset,
+            Some(&self.meta_cache),
+        )?;
         let buf = cur.read_exact(listing_len)?;
         dir::parse_listing(&buf)
     }
@@ -341,6 +398,7 @@ mod tests {
             comp: Compressor::Gzip,
             id_table: Vec::new(),
             fragments: Vec::new(),
+            meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
         }
     }
 
