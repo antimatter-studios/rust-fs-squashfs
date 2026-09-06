@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::inode::Inode;
 use crate::metablock::{MetaCache, MetaCursor};
 use crate::superblock::{self, Superblock};
-use crate::table::{self, FragmentEntry};
+use crate::table::{self, ExportTable, FragmentEntry};
 use crate::xattr::{self, XattrEntry, XattrIdTable};
 use fs_core::BlockRead;
 
@@ -60,6 +60,9 @@ pub struct Filesystem {
     /// distinct SET of attributes in the image, not one per file, so it
     /// is small even when every file carries something.
     xattr_ids: Option<XattrIdTable>,
+    /// Export table, or `None` for an image built with `-no-exports`.
+    /// Only the pointer array is held; see [`ExportTable`].
+    exports: Option<ExportTable>,
     /// Decompressed metadata blocks, keyed by their offset in the image.
     ///
     /// The block cache under `dev` stops the device being asked twice
@@ -132,6 +135,7 @@ impl Filesystem {
         let id_table = table::read_id_table(&*dev, &sb)?;
         let fragments = table::read_fragment_table(&*dev, &sb)?;
         let xattr_ids = xattr::read_id_table(&*dev, &sb)?;
+        let exports = table::read_export_table(&*dev, &sb)?;
         Ok(Filesystem {
             dev,
             sb,
@@ -139,6 +143,7 @@ impl Filesystem {
             id_table,
             fragments,
             xattr_ids,
+            exports,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
         })
     }
@@ -178,6 +183,49 @@ impl Filesystem {
 
     pub fn read_inode(&self, inode_ref: u64) -> Result<Inode> {
         Inode::read(&*self.dev, &self.sb, inode_ref, Some(&self.meta_cache))
+    }
+
+    /// Whether this image can resolve an inode number back to an inode.
+    ///
+    /// False for an image built with `mksquashfs -no-exports`, which
+    /// carries no such map. A caller that hands out inode numbers and
+    /// expects to be asked about them later should check this once at
+    /// mount rather than discovering it on the first question.
+    pub fn is_exportable(&self) -> bool {
+        self.exports.is_some()
+    }
+
+    /// Resolve an inode number to its inode, through the export table.
+    ///
+    /// This is the only way in that does not start at the root. A caller
+    /// holding a number and nothing else — an NFS file handle, or any
+    /// identifier a layer above handed out earlier — would otherwise
+    /// have to keep its own map of every inode it ever mentioned, or
+    /// walk the tree again to find one.
+    ///
+    /// Inode numbers are 1-based and run to
+    /// [`Superblock::inode_count`](crate::Superblock).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotExportable`] when the image has no export table, and
+    /// [`Error::NotFound`] for a number outside the image's range. The
+    /// two are distinct because a caller can act on the difference: the
+    /// first will never succeed for this image, the second might for a
+    /// different number.
+    pub fn read_inode_by_number(&self, inode_number: u32) -> Result<Inode> {
+        self.read_inode(self.inode_ref_for_number(inode_number)?)
+    }
+
+    /// The packed metadata reference for an inode number, without
+    /// reading the inode.
+    ///
+    /// # Errors
+    ///
+    /// As [`read_inode_by_number`](Self::read_inode_by_number).
+    pub fn inode_ref_for_number(&self, inode_number: u32) -> Result<u64> {
+        let exports = self.exports.as_ref().ok_or(Error::NotExportable)?;
+        exports.lookup(&*self.dev, &self.sb, inode_number, Some(&self.meta_cache))
     }
 
     pub fn root_inode(&self) -> Result<Inode> {
@@ -462,6 +510,7 @@ mod tests {
             id_table: Vec::new(),
             fragments: Vec::new(),
             xattr_ids: None,
+            exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
         }
     }

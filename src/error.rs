@@ -37,8 +37,18 @@ pub enum Error {
     /// The image uses a compressor this build doesn't support. Carries the
     /// on-disk compression id (1=gzip, 2=lzma, 3=lzo, 4=xz, 5=lz4, 6=zstd).
     UnsupportedCompression(u16),
-    /// Lookup for a name that isn't present in a directory.
+    /// Lookup for a name that isn't present in a directory, or for an
+    /// inode number the image does not have.
     NotFound,
+    /// The image was built with `mksquashfs -no-exports`, so it carries
+    /// no map from an inode number back to an inode and cannot answer
+    /// that question at all.
+    ///
+    /// Distinct from [`Error::NotFound`] on purpose: one says the inode
+    /// is not there, the other says the question cannot be asked of this
+    /// image, and a caller that treated them alike would keep retrying a
+    /// lookup that can never succeed.
+    NotExportable,
     /// Path component traversal hit a non-directory.
     NotADirectory,
     /// Read past the end of a file.
@@ -58,6 +68,7 @@ impl Error {
             Error::BadDirent(_) => EIO,
             Error::UnsupportedCompression(_) => ENOTSUP,
             Error::NotFound => ENOENT,
+            Error::NotExportable => ENOTSUP,
             Error::NotADirectory => ENOTDIR,
             Error::OutOfRange => ERANGE,
         }
@@ -83,6 +94,10 @@ impl std::fmt::Display for Error {
                 write!(f, "unsupported SquashFS compressor id {id}")
             }
             Error::NotFound => write!(f, "not found"),
+            Error::NotExportable => write!(
+                f,
+                "this image has no export table, so an inode number cannot be resolved"
+            ),
             Error::NotADirectory => write!(f, "not a directory"),
             Error::OutOfRange => write!(f, "read past end of file"),
         }
@@ -115,6 +130,7 @@ mod tests {
                 "compressor id 4",
             ),
             (Error::NotFound, errno::ENOENT, "not found"),
+            (Error::NotExportable, errno::ENOTSUP, "no export table"),
             (Error::NotADirectory, errno::ENOTDIR, "not a directory"),
             (Error::OutOfRange, errno::ERANGE, "past end"),
         ];

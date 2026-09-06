@@ -122,6 +122,25 @@ int fs_squashfs_get_volume_info(fs_squashfs_fs_t *fs,
 int fs_squashfs_stat(fs_squashfs_fs_t *fs, const char *path,
                      fs_squashfs_attr_t *attr);
 
+/* Stat by inode number, through the image's export table.
+ *
+ * The number is the one fs_squashfs_stat and fs_squashfs_dir_next already
+ * hand back in their `inode` field. Without this a caller that keeps those
+ * numbers has no way to turn one back into a file except by walking the
+ * tree again.
+ *
+ * Returns 0 on success, or -1 with:
+ *   ENOTSUP  the image was built with `mksquashfs -no-exports` and carries
+ *            no such map -- this will never succeed for this image;
+ *   ENOENT   the image has no inode with that number.
+ */
+int fs_squashfs_stat_ino(fs_squashfs_fs_t *fs, uint32_t inode_number,
+                         fs_squashfs_attr_t *attr);
+
+/* Whether this image can answer fs_squashfs_stat_ino at all: 1 yes, 0 no,
+ * -1 on a NULL handle. Worth asking once at mount. */
+int fs_squashfs_is_exportable(fs_squashfs_fs_t *fs);
+
 /* ---- Directory listing ---- */
 
 typedef struct fs_squashfs_dir_iter fs_squashfs_dir_iter_t;

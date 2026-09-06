@@ -182,6 +182,16 @@ pub fn unsquashfs_available() -> bool {
 /// the source + image alive (for tools, e.g. `unsquashfs`, that want a
 /// path). Panics if `mksquashfs` fails.
 pub fn build_with_mksquashfs(comp: &str, tree: &Node) -> ImageArtifact {
+    build_with_mksquashfs_args(comp, tree, &["-no-xattrs"])
+}
+
+/// As [`build_with_mksquashfs`], with extra `mksquashfs` arguments.
+///
+/// The default above passes `-no-xattrs`, which is right for tests that
+/// are not about attributes and want the smallest image mksquashfs will
+/// make. A test about a feature that is switched on or off at build time
+/// needs to say so itself, and `extra` is where.
+pub fn build_with_mksquashfs_args(comp: &str, tree: &Node, extra: &[&str]) -> ImageArtifact {
     let dir = tempfile::tempdir().expect("tempdir");
     let src = dir.path().join("src");
     let img = dir.path().join("out.sqfs");
@@ -190,12 +200,13 @@ pub fn build_with_mksquashfs(comp: &str, tree: &Node) -> ImageArtifact {
     let out = Command::new("mksquashfs")
         .arg(&src)
         .arg(&img)
-        .args(["-comp", comp, "-noappend", "-no-progress", "-no-xattrs"])
+        .args(["-comp", comp, "-noappend", "-no-progress"])
+        .args(extra)
         .output()
         .expect("spawn mksquashfs");
     if !out.status.success() {
         panic!(
-            "mksquashfs -comp {comp} failed: code={:?}\nstderr: {}\nstdout: {}",
+            "mksquashfs -comp {comp} {extra:?} failed: code={:?}\nstderr: {}\nstdout: {}",
             out.status.code(),
             String::from_utf8_lossy(&out.stderr),
             String::from_utf8_lossy(&out.stdout),

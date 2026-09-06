@@ -84,15 +84,11 @@
 use crate::error::{Error, Result};
 use crate::metablock::{MetaCache, MetaCursor, MetadataRef};
 use crate::superblock::Superblock;
-use crate::table;
+use crate::table::{self, NO_TABLE};
 use fs_core::BlockRead;
 
 /// An inode's `xattr` field when it has no attributes.
 pub const SQUASHFS_INVALID_XATTR: u32 = 0xFFFF_FFFF;
-
-/// The superblock's `xattr_id_table_start` when the image was built with
-/// `-no-xattrs`. The same sentinel every other absent table uses.
-pub const NO_XATTR_TABLE: u64 = u64::MAX;
 
 /// Set in `type` when the value is a reference rather than the value.
 const XATTR_VALUE_OOL: u16 = 0x0100;
@@ -198,7 +194,7 @@ pub fn read_id_table<R: BlockRead + ?Sized>(
     sb: &Superblock,
 ) -> Result<Option<XattrIdTable>> {
     let header_at = sb.xattr_id_table_start;
-    if header_at == NO_XATTR_TABLE {
+    if header_at == NO_TABLE {
         return Ok(None);
     }
     let mut header = [0u8; ID_TABLE_HEADER_SIZE];
@@ -612,7 +608,7 @@ mod tests {
     #[test]
     fn an_image_without_a_table_reports_none() {
         let mut sb = Superblock::parse(&synth_sb(17, 0, 0)).unwrap();
-        sb.xattr_id_table_start = NO_XATTR_TABLE;
+        sb.xattr_id_table_start = NO_TABLE;
         let dev = MemDev(Mutex::new(vec![0u8; 96]));
         assert!(read_id_table(&dev, &sb).unwrap().is_none());
     }
@@ -642,7 +638,7 @@ mod tests {
     #[test]
     fn the_limits_are_the_ones_the_docs_name() {
         assert_eq!(SQUASHFS_INVALID_XATTR, u32::MAX);
-        assert_eq!(NO_XATTR_TABLE, u64::MAX);
+        assert_eq!(NO_TABLE, u64::MAX);
         assert_eq!(XATTR_VALUE_OOL, 0x0100);
         assert_eq!(MAX_NAME_LEN, 255, "XATTR_NAME_MAX");
         assert_eq!(MAX_VALUE_LEN, 64 * 1024, "XATTR_SIZE_MAX");
