@@ -85,9 +85,20 @@ impl Filesystem {
         if !inode.is_dir() {
             return Err(Error::NotADirectory);
         }
+        // `file_size` for an extended directory is a `u32`, so this is
+        // up to about 4 GiB -- and `read_exact` grows the cursor's
+        // buffer to it and then `to_vec`s a second copy, both before
+        // the listing is parsed. A directory's listing is metadata, and
+        // metadata cannot be larger than the filesystem that holds it.
         let listing_len = inode.dir_listing_len();
         if listing_len == 0 {
             return Ok(Vec::new());
+        }
+        let filesystem = self.sb.bytes_used.min(self.dev.size_bytes());
+        if listing_len as u64 > filesystem {
+            return Err(Error::BadInode(
+                "directory listing is longer than the filesystem holding it",
+            ));
         }
         let start_abs = self.sb.directory_table_start + inode.dir_start_block as u64;
         let mut cur = MetaCursor::new(&*self.dev, &self.sb, start_abs, inode.dir_block_offset)?;
@@ -175,10 +186,16 @@ impl Filesystem {
     /// Absolute on-disk start offset of each full data block.
     fn block_offsets(&self, inode: &Inode) -> Vec<u64> {
         let mut offs = Vec::with_capacity(inode.block_sizes.len());
+        // Saturating: `blocks_start` is a raw `u64` for an extended
+        // file inode, so the running sum can leave a `u64` -- and in
+        // release, where this crate ships with `overflow-checks` off,
+        // it wrapped to a small offset that then reads some unrelated
+        // part of the image as the file's data. Saturating gives an
+        // offset no device reaches, so the read fails and says so.
         let mut cursor = inode.blocks_start;
         for &sz in &inode.block_sizes {
             offs.push(cursor);
-            cursor += table::data_on_disk_size(sz) as u64;
+            cursor = cursor.saturating_add(u64::from(table::data_on_disk_size(sz)));
         }
         offs
     }
@@ -303,6 +320,40 @@ mod tests {
             block_sizes,
             symlink_target: Vec::new(),
         }
+    }
+
+    /// A directory's listing is read whole into a metadata cursor's
+    /// buffer and then copied a second time, both before it is parsed.
+    /// `file_size` for an extended directory is a `u32`, so that is up
+    /// to about 4 GiB twice over, from an inode field with nothing
+    /// tying it to the image.
+    ///
+    /// A listing is metadata, and metadata cannot be larger than the
+    /// filesystem holding it.
+    #[test]
+    fn a_directory_listing_longer_than_the_filesystem_is_refused() {
+        let mut fs = fs_over(vec![0u8; 64 * 1024]);
+        fs.sb.bytes_used = 64 * 1024;
+
+        let mut dir = file_inode(0, Vec::new());
+        dir.inode_type = crate::inode::TYPE_BASIC_DIR;
+        dir.file_size = u64::from(u32::MAX);
+
+        let why = format!("{:?}", fs.read_dir(&dir).err());
+        assert!(
+            why.contains("longer than the filesystem"),
+            "a 4 GiB listing in a 64 KiB image was answered with {why}"
+        );
+
+        // A listing the image could hold is still read -- it fails on
+        // the metadata block, which is the next thing to go wrong, not
+        // on its declared length.
+        dir.file_size = 1024;
+        let why = format!("{:?}", fs.read_dir(&dir).err());
+        assert!(
+            !why.contains("longer than the filesystem"),
+            "a 1021-byte listing in a 64 KiB image was refused as {why}"
+        );
     }
 
     #[test]
