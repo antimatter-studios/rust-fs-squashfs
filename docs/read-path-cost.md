@@ -12,6 +12,66 @@ it turns out to be the more interesting of the two.
 Fixture: built by the test with `mksquashfs -comp gzip`, six wide and
 three deep, 216 files of incompressible pattern data. 258 paths.
 
+## 2026-09-07 — and after caching the decompressed metadata
+
+| shape | reads | bytes | wall |
+|---|---:|---:|---:|
+| **uncached** | | | |
+| walk — list every directory (258 items) | 3904 | 2.69 MB | 20135 µs |
+| stat — resolve 216 files by path | 3024 | 2.13 MB | 15715 µs |
+| read — read 216 files | 3240 | 4.21 MB | 27392 µs |
+| **block cache only** | | | |
+| walk | **0** | 0 | 18538 µs |
+| stat | **0** | 0 | 14631 µs |
+| read | **0** | 0 | 26104 µs |
+| **block cache + decompressed-metadata cache** | | | |
+| walk | **0** | 0 | **447 µs** |
+| stat | **0** | 0 | **310 µs** |
+| read | **0** | 0 | **11118 µs** |
+
+Metadata cache at the end of the third pass: 3 blocks held of 256
+available, 4973 hits, 3 misses.
+
+### The walk is forty times faster and the reads did not change
+
+The reads column was already zero and stays zero, which is the point:
+this cache sits *above* the codec, so a hit spares the decompression
+rather than the read. Nothing about what reaches the device changed.
+
+What changed is everything else. Listing every directory went from
+18.5 ms to 0.45 ms, a factor of 41. Resolving 216 paths went from
+14.6 ms to 0.31 ms, a factor of 47. The previous section said the read
+path was bound by decompression rather than by I/O; these are the same
+numbers with the decompression taken out, and they say it was bound by
+decompression almost entirely.
+
+Three metadata blocks. That is the whole working set of this fixture —
+258 paths, 216 files — and it was being decompressed 4976 times.
+
+### Why `read` only halved
+
+Reading the files still costs 11.1 ms, and it should. That pass reads
+216 files of 8 KiB of deliberately incompressible pattern data, and
+their *data* blocks go through the codec on every read. This cache does
+not hold them and should not: data is unbounded where metadata is not,
+and a cache holding a file's blocks would evict the directory blocks
+every lookup depends on. What fell out of the read pass is its metadata
+half — the inode and directory reads each file needed before its bytes
+could be found — which is the same ~15 ms the other two passes lost.
+
+Caching decompressed *data* is a separate question with a separate
+answer, and the number that would justify it is not this one.
+
+### Sizing
+
+`DEFAULT_META_CACHE_BLOCKS` is 256, and the unit is the metadata block,
+which decompresses to at most 8 KiB — so the ceiling is 2 MiB. This
+fixture never went past three entries. An image with tens of thousands
+of files has a few megabytes of metadata in total and returns to a much
+smaller subset of it, so 256 is meant to hold the working set of a walk
+rather than the whole table; the line to watch on a larger image is the
+miss count printed beside the figures.
+
 ## 2026-09-06 — before and after a block cache
 
 | shape | reads | bytes | wall |

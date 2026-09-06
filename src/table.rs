@@ -100,7 +100,10 @@ fn read_indirect_table<R: BlockRead + ?Sized>(
     let mut out = Vec::with_capacity(total_bytes.min(1 << 20));
     for i in 0..n_blocks {
         let p = u64::from_le_bytes(ptr_bytes[i * 8..i * 8 + 8].try_into().unwrap());
-        let (block, _next) = read_block(dev, sb, p)?;
+        // No cache: the id and fragment tables are read once, at open,
+        // and never again. Caching their blocks would evict inode and
+        // directory blocks that are read over and over.
+        let (block, _next) = read_block(dev, sb, p, None)?;
         out.extend_from_slice(&block);
     }
     if out.len() < total_bytes {
