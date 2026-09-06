@@ -28,9 +28,11 @@
 //! - [`decompress`] — codec dispatch (gzip / xz / lz4 / zstd / lzo)
 //! - [`metablock`] — 8 KiB metadata-block reader + cross-block cursor
 //! - [`table`] — indirect lookup tables (id table, fragment table)
+//! - [`xattr`] — extended attributes: the id table and the name/value pairs
 //! - [`inode`] — all SquashFS inode shapes (basic + extended)
 //! - [`dir`] — directory listing parser
-//! - [`fs`] — top-level handle: path lookup, dir listing, file/symlink read
+//! - [`fs`] — top-level handle: path lookup, dir listing, file/symlink read,
+//!   extended attributes
 //! - [`capi`] — C ABI exports matching `include/fs_squashfs.h`
 
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -43,6 +45,7 @@ pub mod inode;
 pub mod metablock;
 pub mod superblock;
 pub mod table;
+pub mod xattr;
 
 // C ABI exports — surface defined in `include/fs_squashfs.h`.
 pub mod capi;
@@ -53,3 +56,4 @@ pub use error::{Error, Result};
 pub use fs::Filesystem;
 pub use inode::{FileType, Inode};
 pub use superblock::Superblock;
+pub use xattr::XattrEntry;

@@ -128,6 +128,17 @@ pub struct Inode {
 
     // ----- symlink -----
     pub symlink_target: Vec<u8>,
+
+    /// Index into the xattr id table, or [`SQUASHFS_INVALID_XATTR`] when
+    /// this inode has no extended attributes.
+    ///
+    /// Only the EXTENDED inode types carry the field at all — an inode
+    /// with attributes is written in its extended form for that reason —
+    /// so a basic inode always reads as invalid here rather than as
+    /// "unknown".
+    ///
+    /// [`SQUASHFS_INVALID_XATTR`]: crate::xattr::SQUASHFS_INVALID_XATTR
+    pub xattr_index: u32,
 }
 
 impl Inode {
@@ -142,6 +153,11 @@ impl Inode {
     }
     pub fn is_symlink(&self) -> bool {
         matches!(self.file_type(), FileType::Symlink)
+    }
+
+    /// True if the inode carries extended attributes.
+    pub fn has_xattrs(&self) -> bool {
+        self.xattr_index != crate::xattr::SQUASHFS_INVALID_XATTR
     }
 
     /// True if a file has a packed tail fragment.
@@ -199,6 +215,7 @@ impl Inode {
             fragment_offset: 0,
             block_sizes: Vec::new(),
             symlink_target: Vec::new(),
+            xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         };
 
         let block_size = sb.block_size as u64;
@@ -217,7 +234,7 @@ impl Inode {
                 let _parent = cur.read_u32()?;
                 let _index_count = cur.read_u16()?;
                 inode.dir_block_offset = cur.read_u16()?;
-                let _xattr = cur.read_u32()?;
+                inode.xattr_index = cur.read_u32()?;
                 // Directory-index entries (fast-lookup hints) follow inline,
                 // but we do a linear scan of the listing, so they're ignored.
             }
@@ -236,7 +253,7 @@ impl Inode {
                 inode.nlink = cur.read_u32()?;
                 inode.fragment_index = cur.read_u32()?;
                 inode.fragment_offset = cur.read_u32()?;
-                let _xattr = cur.read_u32()?;
+                inode.xattr_index = cur.read_u32()?;
                 let n = block_count(inode.file_size, block_size, inode.fragment_index)?;
                 inode.block_sizes = read_block_sizes(&mut cur, n)?;
             }
@@ -251,7 +268,7 @@ impl Inode {
                 let target_size = cur.read_u32()?;
                 inode.symlink_target = read_symlink(&mut cur, target_size)?;
                 inode.file_size = target_size as u64;
-                let _xattr = cur.read_u32()?;
+                inode.xattr_index = cur.read_u32()?;
             }
             TYPE_BASIC_BLKDEV | TYPE_BASIC_CHRDEV => {
                 inode.nlink = cur.read_u32()?;
@@ -260,14 +277,14 @@ impl Inode {
             TYPE_EXT_BLKDEV | TYPE_EXT_CHRDEV => {
                 inode.nlink = cur.read_u32()?;
                 let _rdev = cur.read_u32()?;
-                let _xattr = cur.read_u32()?;
+                inode.xattr_index = cur.read_u32()?;
             }
             TYPE_BASIC_FIFO | TYPE_BASIC_SOCKET => {
                 inode.nlink = cur.read_u32()?;
             }
             TYPE_EXT_FIFO | TYPE_EXT_SOCKET => {
                 inode.nlink = cur.read_u32()?;
-                let _xattr = cur.read_u32()?;
+                inode.xattr_index = cur.read_u32()?;
             }
             other => {
                 return Err(Error::BadInode(match other {
@@ -369,6 +386,7 @@ mod tests {
             fragment_offset: 0,
             block_sizes: Vec::new(),
             symlink_target: Vec::new(),
+            xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         };
         // file_size == 3 -> empty listing.
         assert_eq!(ino.dir_listing_len(), 0);

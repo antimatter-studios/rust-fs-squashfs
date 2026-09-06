@@ -15,6 +15,7 @@ use crate::inode::Inode;
 use crate::metablock::{MetaCache, MetaCursor};
 use crate::superblock::{self, Superblock};
 use crate::table::{self, FragmentEntry};
+use crate::xattr::{self, XattrEntry, XattrIdTable};
 use fs_core::BlockRead;
 
 /// How many blocks a mount caches by default.
@@ -54,6 +55,11 @@ pub struct Filesystem {
     id_table: Vec<u32>,
     /// Fragment table — a file's `fragment_index` indexes into this.
     fragments: Vec<FragmentEntry>,
+    /// Extended-attribute id table, or `None` when the image was built
+    /// with `-no-xattrs`. Read once at mount: it holds one entry per
+    /// distinct SET of attributes in the image, not one per file, so it
+    /// is small even when every file carries something.
+    xattr_ids: Option<XattrIdTable>,
     /// Decompressed metadata blocks, keyed by their offset in the image.
     ///
     /// The block cache under `dev` stops the device being asked twice
@@ -125,12 +131,14 @@ impl Filesystem {
         }
         let id_table = table::read_id_table(&*dev, &sb)?;
         let fragments = table::read_fragment_table(&*dev, &sb)?;
+        let xattr_ids = xattr::read_id_table(&*dev, &sb)?;
         Ok(Filesystem {
             dev,
             sb,
             comp,
             id_table,
             fragments,
+            xattr_ids,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
         })
     }
@@ -228,6 +236,61 @@ impl Filesystem {
             node = self.lookup(&node, comp.as_bytes())?;
         }
         Ok(node)
+    }
+
+    /// Every extended attribute on an inode, in the order the image
+    /// stores them.
+    ///
+    /// Names come back assembled — `user.colour`, not `colour` — since
+    /// SquashFS stores the namespace prefix as a small integer and the
+    /// rest of the name after it, and a caller should not have to know
+    /// that.
+    ///
+    /// An inode with no attributes gives an empty list, and so does
+    /// every inode in an image built with `-no-xattrs`. Neither is an
+    /// error: absence is a normal answer, and a caller cannot act on the
+    /// difference between "none" and "could not look".
+    ///
+    /// # Errors
+    ///
+    /// As the metadata reader, plus [`Error::BadMetadata`] when the
+    /// inode names an attribute set the image does not have or the set
+    /// does not decode.
+    pub fn list_xattrs(&self, inode: &Inode) -> Result<Vec<XattrEntry>> {
+        let Some(table) = self.xattr_ids.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if !inode.has_xattrs() {
+            return Ok(Vec::new());
+        }
+        xattr::read_set(
+            &*self.dev,
+            &self.sb,
+            table,
+            inode.xattr_index,
+            Some(&self.meta_cache),
+        )
+    }
+
+    /// One attribute's value, by assembled name (`user.colour`).
+    ///
+    /// `Ok(None)` means the attribute is not set, which is distinct from
+    /// `Ok(Some(vec![]))` — a zero-length value is a real thing to store.
+    ///
+    /// # Why this reads the whole set
+    ///
+    /// Unlike the sister drivers there is no index to search: a set is a
+    /// flat run of records and a name's position in it is not derivable
+    /// from the name. The set is small — it is the attributes of one
+    /// file — and the metadata block it lives in is almost certainly
+    /// already decompressed in the cache, since the inode that named it
+    /// was just read.
+    pub fn get_xattr(&self, inode: &Inode, name: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .list_xattrs(inode)?
+            .into_iter()
+            .find(|e| e.name == name)
+            .map(|e| e.value))
     }
 
     /// A symlink's raw target bytes.
@@ -398,6 +461,7 @@ mod tests {
             comp: Compressor::Gzip,
             id_table: Vec::new(),
             fragments: Vec::new(),
+            xattr_ids: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
         }
     }
@@ -420,6 +484,7 @@ mod tests {
             fragment_offset: 0,
             block_sizes,
             symlink_target: Vec::new(),
+            xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         }
     }
 

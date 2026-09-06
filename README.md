@@ -19,8 +19,8 @@ read subset of its sister drivers' surface — no mkfs / create / write.
 | Compression (legacy) | `lzma` (id 2) — best-effort |
 | Inodes | basic + extended: dir, file, symlink, dev/fifo/socket |
 | Data | full blocks, sparse blocks, tail fragments |
-| Lookup tables | id (uid/gid), fragment |
-| xattrs | not yet surfaced |
+| Lookup tables | id (uid/gid), fragment, xattr |
+| xattrs | read: `list_xattrs` / `get_xattr`, including shared sets and out-of-line values. No write path — SquashFS has none. |
 
 Every standard compressor `mksquashfs` can emit is decoded. gzip/xz/zstd use their
 container stream formats (zlib / `.xz` / zstd frames); lz4 uses the raw LZ4 block
@@ -36,7 +36,8 @@ LZO1X decoder.
 - `table` — indirect lookup tables (id, fragment)
 - `inode` — all SquashFS inode shapes
 - `dir` — directory-listing parser
-- `fs` — top-level handle: path lookup, dir listing, file/symlink read
+- `xattr` — extended attributes: the three-level id table and the name/value pairs
+- `fs` — top-level handle: path lookup, dir listing, file/symlink read, attributes
 - `capi` — C ABI exports matching `include/fs_squashfs.h`
 
 ## CLI

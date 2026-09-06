@@ -58,7 +58,12 @@ pub struct FragmentEntry {
 /// is `n_entries * entry_size`; we pull `ceil(total_bytes / 8192)` block
 /// pointers from `table_start` and return the concatenated decompressed
 /// bytes (length >= `total_bytes`).
-fn read_indirect_table<R: BlockRead + ?Sized>(
+///
+/// Shared with [`crate::xattr`], whose id table has the same shape: a
+/// raw `u64` pointer array followed by metadata blocks of fixed-size
+/// entries. The bounds check below is the reason it is shared rather
+/// than written twice.
+pub(crate) fn read_indirect_table<R: BlockRead + ?Sized>(
     dev: &R,
     sb: &Superblock,
     table_start: u64,

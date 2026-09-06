@@ -608,6 +608,142 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
     )
 }
 
+// ---------------------------------------------------------------------
+// Extended attributes (read only)
+//
+// The signatures match `fs_ext4_listxattr` / `fs_ext4_getxattr` byte for
+// byte, deliberately: a layer above should not need a per-driver shape
+// for something every filesystem in the family has. What differs is
+// underneath — SquashFS stores an attribute's namespace prefix as a
+// small integer and the rest of the name after it, so the names handed
+// back here are assembled rather than copied.
+// ---------------------------------------------------------------------
+
+/// NUL-separated attribute names for `path`, or -1.
+///
+/// Returns the total size the names need, whether or not they were
+/// written, so a caller can probe with a NULL buffer and then allocate.
+/// A buffer too small takes as many whole names as fit — a half-written
+/// name is not a name, and the caller learns the real size from the
+/// return value either way.
+///
+/// A path with no attributes returns 0, which is a success. So does
+/// every path in an image built with `-no-xattrs`.
+///
+/// # Safety
+///
+/// `fs` must be live; `path` NUL-terminated; `buf` writable for
+/// `bufsize` bytes, or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn fs_squashfs_listxattr(
+    fs: *mut fs_squashfs_fs_t,
+    path: *const c_char,
+    buf: *mut c_char,
+    bufsize: usize,
+) -> i64 {
+    ffi_guard(
+        -1,
+        AssertUnwindSafe(|| {
+            clear_last_error();
+            if fs.is_null() || path.is_null() {
+                set_err_msg("null fs or path", errno::EINVAL);
+                return -1;
+            }
+            let fs = unsafe { &(*fs).fs };
+            let path = unsafe { cstr_to_str(path) };
+            let inode = match fs.lookup_path(path) {
+                Ok(i) => i,
+                Err(e) => {
+                    set_err_from(&e, &format!("listxattr {path}"));
+                    return -1;
+                }
+            };
+            let entries = match fs.list_xattrs(&inode) {
+                Ok(v) => v,
+                Err(e) => {
+                    set_err_from(&e, &format!("listxattr {path}"));
+                    return -1;
+                }
+            };
+            let required: usize = entries.iter().map(|e| e.name.len() + 1).sum();
+            if !buf.is_null() && bufsize > 0 {
+                let out = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, bufsize) };
+                let mut pos = 0usize;
+                for e in &entries {
+                    let needed = e.name.len() + 1;
+                    if pos + needed > bufsize {
+                        break;
+                    }
+                    out[pos..pos + e.name.len()].copy_from_slice(&e.name);
+                    out[pos + e.name.len()] = 0;
+                    pos += needed;
+                }
+            }
+            required as i64
+        }),
+    )
+}
+
+/// One attribute's value for `path`, or -1 when it is not set.
+///
+/// A zero-length value returns 0 and is not an error; the absent case is
+/// -1 with ENOENT. A caller that tested for `<= 0` would conflate them,
+/// which is why the header says so too.
+///
+/// # Safety
+///
+/// `fs` must be live; `path` and `name` NUL-terminated; `buf` writable
+/// for `bufsize` bytes, or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn fs_squashfs_getxattr(
+    fs: *mut fs_squashfs_fs_t,
+    path: *const c_char,
+    name: *const c_char,
+    buf: *mut c_void,
+    bufsize: usize,
+) -> i64 {
+    ffi_guard(
+        -1,
+        AssertUnwindSafe(|| {
+            clear_last_error();
+            if fs.is_null() || path.is_null() || name.is_null() {
+                set_err_msg("null fs, path or name", errno::EINVAL);
+                return -1;
+            }
+            let fs = unsafe { &(*fs).fs };
+            let path = unsafe { cstr_to_str(path) };
+            let name = unsafe { cstr_to_str(name) };
+            let inode = match fs.lookup_path(path) {
+                Ok(i) => i,
+                Err(e) => {
+                    set_err_from(&e, &format!("getxattr {path}"));
+                    return -1;
+                }
+            };
+            let value = match fs.get_xattr(&inode, name.as_bytes()) {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    set_err_msg(
+                        &format!("getxattr {path}: {name} is not set"),
+                        errno::ENOENT,
+                    );
+                    return -1;
+                }
+                Err(e) => {
+                    set_err_from(&e, &format!("getxattr {path} {name}"));
+                    return -1;
+                }
+            };
+            if !buf.is_null() && bufsize > 0 {
+                let take = value.len().min(bufsize);
+                let out = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, bufsize) };
+                out[..take].copy_from_slice(&value[..take]);
+            }
+            value.len() as i64
+        }),
+    )
+}
+
 #[cfg(test)]
 mod buffer_capacity_tests {
     use super::*;
