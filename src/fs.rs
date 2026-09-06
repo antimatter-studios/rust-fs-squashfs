@@ -17,6 +17,20 @@ use crate::superblock::{self, Superblock};
 use crate::table::{self, FragmentEntry};
 use fs_core::BlockRead;
 
+/// How many blocks a mount caches by default.
+///
+/// SIZED IN THE ARCHIVE'S OWN BLOCK, WHICH IS LARGE. `mksquashfs`
+/// defaults to 128 KiB, and images use up to 1 MiB, so the count here
+/// buys far more memory per unit than the same number would in a
+/// driver whose blocks are 4 KiB. 32 is 4 MiB at the usual size and
+/// 32 MiB at the largest — already generous for metadata, which is
+/// what this holds; file data passes through on the bypass rule.
+///
+/// The measurement in `docs/read-path-cost.md` was taken with this
+/// value. Change it and re-take the measurement rather than the
+/// reverse.
+pub const DEFAULT_CACHE_BLOCKS: usize = 32;
+
 pub struct Filesystem {
     dev: Arc<dyn BlockRead>,
     pub sb: Superblock,
@@ -33,6 +47,38 @@ impl Filesystem {
     /// metadata read needs the codec), and loads the small id + fragment
     /// tables once.
     pub fn open(dev: Arc<dyn BlockRead>) -> Result<Self> {
+        Self::open_with_cache(dev, DEFAULT_CACHE_BLOCKS)
+    }
+
+    /// Open an image, caching `blocks` metadata blocks.
+    ///
+    /// # Why the cache is built here and not by the caller
+    ///
+    /// It is sized in blocks, and the block size is the image's. A
+    /// caller wanting to wrap the device itself would have to parse a
+    /// superblock first to know what to wrap it with — which is what
+    /// this does, once, before wrapping.
+    ///
+    /// # What it is for
+    ///
+    /// Metadata lives in 8 KiB blocks, each compressed and each holding
+    /// many inodes or directory entries. Resolving `/a/b/c` decompresses
+    /// the block holding the root's entries, then `a`'s, then `b`'s —
+    /// and the next path resolved does all of it again, from the device,
+    /// for bytes that cannot change in a read-only archive.
+    ///
+    /// `blocks` of zero disables it, which is what the measurement in
+    /// `tests/read_path_cost.rs` uses to take its baseline.
+    pub fn open_with_cache(dev: Arc<dyn BlockRead>, blocks: usize) -> Result<Self> {
+        let dev: Arc<dyn BlockRead> = if blocks == 0 {
+            dev
+        } else {
+            // The block size is not known until the superblock has been
+            // read, and the superblock is at offset zero, so this one
+            // read goes to the device directly.
+            let sb = superblock::read(&*dev)?;
+            fs_core::CachingDevice::read_only(dev, u64::from(sb.block_size), blocks)
+        };
         let sb = superblock::read(&*dev)?;
         // `compressor()` has already rejected an id this build does not
         // know, so the guard below cannot fire today: `is_supported` is
