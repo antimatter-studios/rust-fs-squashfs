@@ -285,7 +285,12 @@ fn block_count(file_size: u64, block_size: u64, fragment_index: u32) -> Result<u
 }
 
 fn read_block_sizes<R: BlockRead + ?Sized>(cur: &mut MetaCursor<R>, n: u64) -> Result<Vec<u32>> {
-    let mut v = Vec::with_capacity(n as usize);
+    // Reserved for what a plausible file needs, not for what the
+    // sanity bound allows. `n` is bounded by `MAX_BLOCKS`, which is
+    // 2^24 -- 64 MiB of u32s reserved before the first entry is read,
+    // and every child inode a directory scan touches pays it in turn.
+    // The vector grows to whatever is actually there.
+    let mut v = Vec::with_capacity((n as usize).min(4096));
     for _ in 0..n {
         v.push(cur.read_u32()?);
     }
