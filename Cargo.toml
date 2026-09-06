@@ -23,7 +23,7 @@ path = "src/bin/lssquashfs.rs"
 # crates publish; the FFI mount path consumes `fs_core::ffi::FsCoreDevice`
 # so an FSKit extension (or any FFI consumer) can hand us a block-device
 # resource.
-am-fs-core = { path = "../rust-fs-core", version = "0.2" }
+am-fs-core = { path = "../rust-fs-core", version = "0.2.6" }
 # LZO1X codec (compression id 3). Extracted from this crate into its own
 # published crate so the Btrfs driver can share it rather than each
 # carrying a copy — the decoder is identical and the format is not
