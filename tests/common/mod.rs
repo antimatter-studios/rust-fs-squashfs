@@ -136,22 +136,45 @@ fn materialize(path: &Path, node: &Node) {
 
 // ---- squashfs-tools oracle plumbing ------------------------------------
 
-/// True if `mksquashfs` is on `PATH` and runnable.
-pub fn mksquashfs_available() -> bool {
-    Command::new("mksquashfs")
+/// True if `tool` is on `PATH` and runnable.
+///
+/// A MISSING TOOL IS A SKIP ON A LAPTOP AND A FAILURE IN CI.
+///
+/// Every oracle here returns early and prints a line when the reference
+/// tools are absent, which is right on a machine that has no
+/// squashfs-tools: the driver's own tests still run. It is exactly
+/// wrong in CI, where the workflow installs squashfs-tools precisely so
+/// these can run. There, an absent tool means the install step changed
+/// or broke -- and the whole cross-validation suite would go green
+/// having compared this driver against nothing at all.
+///
+/// The failure that hides is the expensive one: the oracles are what
+/// say this driver reads what the reference writer wrote, so a silent
+/// skip removes the only check that is not this repository marking its
+/// own homework.
+fn tool_available(tool: &str) -> bool {
+    let found = Command::new(tool)
         .arg("-version")
         .output()
         .map(|o| o.status.success() || !o.stdout.is_empty())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(
+        found || std::env::var_os("CI").is_none(),
+        "{tool} is not on PATH, and CI is set. The workflow installs squashfs-tools so the \
+         oracles can run; without it they would skip and the suite would pass having \
+         compared this driver against nothing."
+    );
+    found
+}
+
+/// True if `mksquashfs` is on `PATH` and runnable.
+pub fn mksquashfs_available() -> bool {
+    tool_available("mksquashfs")
 }
 
 /// True if `unsquashfs` is on `PATH` and runnable.
 pub fn unsquashfs_available() -> bool {
-    Command::new("unsquashfs")
-        .arg("-version")
-        .output()
-        .map(|o| o.status.success() || !o.stdout.is_empty())
-        .unwrap_or(false)
+    tool_available("unsquashfs")
 }
 
 /// Build a SquashFS image with `mksquashfs -comp <comp>` from a `Node`
