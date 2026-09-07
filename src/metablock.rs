@@ -227,8 +227,28 @@ impl MetadataRef {
     }
 
     /// The absolute device offset of the metablock, given its table.
+    ///
+    /// Saturating, for the reason `Filesystem::block_offsets` already
+    /// gives about its own running sum: `table_start` is a raw `u64`
+    /// off the superblock and `block_offset` is 48 bits out of a
+    /// reference, so the two can leave a `u64` between them. A plain
+    /// `+` panicked in debug and wrapped in release, where this crate
+    /// ships with `overflow-checks` off — and a wrapped offset reads
+    /// some unrelated part of the image as the structure that was
+    /// asked for. Measured with `inode_table_start` patched to
+    /// 0xffff_ff00_0000_0060 and `root_inode_ref` to 1 << 56:
+    ///
+    /// ```text
+    /// debug:   panicked at src/metablock.rs: attempt to add with overflow
+    /// release: open ok, root err BadMetadata("metadata block size out of range")
+    /// ```
+    ///
+    /// A panic in the profile the tests run and a quiet read from
+    /// nowhere in the profile that ships is the worst pair available.
+    /// Saturating gives an offset no device reaches, so the read fails
+    /// and says so, in both.
     pub fn start_abs(self, table_start: u64) -> u64 {
-        table_start + self.block_offset
+        table_start.saturating_add(self.block_offset)
     }
 }
 
@@ -674,6 +694,31 @@ mod metadata_ref_tests {
         let r = MetadataRef::from_packed(0);
         assert_eq!((r.block_offset, r.in_block), (0, 0));
         assert_eq!(r.start_abs(4096), 4096, "the table's own start");
+    }
+
+    /// The sum saturates rather than wrapping.
+    ///
+    /// `table_start` comes off the superblock and `block_offset` is 48
+    /// bits out of a reference, so between them they can leave a `u64`.
+    /// A plain `+` panicked in debug and wrapped in release, where this
+    /// crate ships with `overflow-checks` off — and a wrapped offset
+    /// names real bytes, so the read succeeds against the wrong part of
+    /// the image. `u64::MAX` is an offset no device reaches, so the
+    /// read fails and says where.
+    ///
+    /// This covers the directory listing too: `Filesystem::read_dir`
+    /// goes through this function rather than writing the sum out
+    /// again, which is how the two came to disagree in the first place.
+    #[test]
+    fn start_abs_saturates_rather_than_wrapping() {
+        // packed >> 16 is the block offset, so 1 << 56 packed is
+        // 1 << 40 offset — the value the issue reports.
+        let r = MetadataRef::from_packed(1u64 << 56);
+        assert_eq!(r.block_offset, 1 << 40);
+        assert_eq!(r.start_abs(0xffff_ff00_0000_0060), u64::MAX);
+        // And an ordinary reference is untouched by the change.
+        let r = MetadataRef::from_packed((3u64 << 16) | 7);
+        assert_eq!(r.start_abs(1000), 1003);
     }
 
     /// `start_abs` is the table start plus the block offset — never the

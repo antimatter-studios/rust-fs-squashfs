@@ -12,7 +12,7 @@ use crate::decompress::{self, Compressor};
 use crate::dir::{self, DirEntry};
 use crate::error::{Error, Result};
 use crate::inode::Inode;
-use crate::metablock::{MetaCache, MetaCursor};
+use crate::metablock::{MetaCache, MetaCursor, MetadataRef};
 use crate::superblock::{self, Superblock};
 use crate::table::{self, ExportTable, FragmentEntry};
 use crate::xattr::{self, XattrEntry, XattrIdTable};
@@ -250,7 +250,20 @@ impl Filesystem {
         if listing_len == 0 {
             return Ok(Vec::new());
         }
-        let start_abs = self.sb.directory_table_start + inode.dir_start_block as u64;
+        // THE one copy of "a table start plus a block offset".
+        //
+        // This wrote the sum out by hand, which is how it came to be a
+        // plain `+` while `MetadataRef::start_abs` — the same sum, over
+        // the same two kinds of number — was saturating. Going through
+        // the type means the rule cannot be right in one place and
+        // wrong in another, and it is the reason `MetadataRef` exists:
+        // "not hard to get right once; easy to get right differently
+        // three times", as its own doc puts it.
+        let start_abs = MetadataRef {
+            block_offset: u64::from(inode.dir_start_block),
+            in_block: inode.dir_block_offset,
+        }
+        .start_abs(self.sb.directory_table_start);
         let mut cur = MetaCursor::new(
             &*self.dev,
             &self.sb,
@@ -465,6 +478,24 @@ impl Filesystem {
     /// size + compressed bit; `max_out` bounds the decompressed length.
     fn read_data_block(&self, abs_off: u64, size_word: u32, max_out: usize) -> Result<Vec<u8>> {
         let on_disk = table::data_on_disk_size(size_word) as usize;
+        // THE SIZE WORD IS THE ALLOCATION, and it comes off the disk.
+        //
+        // `DATA_SIZE_MASK` is 24 bits, so `on_disk` reaches 16 MiB
+        // while `block_size` is at most 1 MiB. A block whose compressed
+        // form is larger than the block it decompresses to is corrupt
+        // by definition — `mksquashfs` stores such a block uncompressed
+        // instead — so the ceiling is the archive's own block size.
+        //
+        // The metadata sibling has had this bound all along
+        // (`metablock.rs`: `on_disk == 0 || on_disk > METADATA_SIZE`).
+        // Without it here the read still failed, on the short read or
+        // the decoder's own ceiling, but only after allocating and
+        // reading up to 16 MiB per logical block, inside a read loop.
+        if on_disk > self.sb.block_size as usize {
+            return Err(Error::BadInode(
+                "data block's on-disk size exceeds the archive's block size",
+            ));
+        }
         let mut raw = vec![0u8; on_disk];
         self.dev.read_at(abs_off, &mut raw)?;
         if table::data_is_compressed(size_word) {
@@ -564,6 +595,58 @@ mod tests {
             "a listing longer than the image was refused on its declared length: {why}"
         );
         assert!(why != "None", "a 4 GiB listing in a 64 KiB image succeeded");
+    }
+
+    /// A data block whose declared on-disk size is bigger than the
+    /// archive's own block size is refused before it is allocated.
+    ///
+    /// `DATA_SIZE_MASK` is 24 bits, so the word reaches 16 MiB while
+    /// `block_size` is at most 1 MiB. A block whose compressed form is
+    /// larger than what it decompresses to is corrupt by definition —
+    /// `mksquashfs` stores such a block uncompressed instead. Without
+    /// the bound the read still failed, on the short read or the
+    /// decoder's ceiling, but only after allocating and reading up to
+    /// 16 MiB per logical block, inside a read loop.
+    ///
+    /// The metadata sibling has had this bound all along; this is the
+    /// data path catching up.
+    #[test]
+    fn a_data_block_bigger_than_the_archives_block_size_is_refused() {
+        let fs = fs_over(vec![0u8; 64 * 1024]);
+        // 0x00FF_FFFF is the largest the 24-bit field can say, and the
+        // archive's blocks are 4 KiB.
+        let inode = file_inode(BLOCK_SIZE as u64, vec![0x00FF_FFFF]);
+        let mut buf = vec![0u8; BLOCK_SIZE];
+        match fs.read_file(&inode, 0, &mut buf) {
+            Err(Error::BadInode(m)) => assert!(
+                m.contains("on-disk size"),
+                "the refusal must name the size word, got {m:?}"
+            ),
+            other => panic!("expected a refusal naming the size, got {other:?}"),
+        }
+    }
+
+    /// The last on-disk size that must still be accepted.
+    ///
+    /// A block that compresses to exactly the archive's block size is
+    /// legal — it is what an incompressible block looks like — so the
+    /// bound is `>` and not `>=`. Without this, tightening it by one
+    /// byte would refuse the commonest block in an incompressible file
+    /// and pass the test above.
+    #[test]
+    fn a_data_block_of_exactly_the_block_size_is_accepted() {
+        let payload = vec![0xABu8; BLOCK_SIZE];
+        let fs = fs_over(payload.clone());
+        // Bit 24 set = stored uncompressed, so the bytes come back as
+        // they are and the test does not depend on a codec.
+        let size_word = BLOCK_SIZE as u32 | crate::table::DATA_UNCOMPRESSED_BIT;
+        let inode = file_inode(BLOCK_SIZE as u64, vec![size_word]);
+        let mut buf = vec![0u8; BLOCK_SIZE];
+        let n = fs
+            .read_file(&inode, 0, &mut buf)
+            .expect("a full-size uncompressed block is legal");
+        assert_eq!(n, BLOCK_SIZE);
+        assert_eq!(buf, payload);
     }
 
     #[test]
