@@ -348,3 +348,38 @@ fn readlink_null_args_error_not_crash() {
         assert_eq!(rc, -1);
     }
 }
+
+/// The C ABI refuses the stat rather than reporting root, and leaves
+/// `attr` alone when it does.
+///
+/// `fill_attr` resolves the owner before it writes anything, so a
+/// caller handed -1 has a struct it never had a reason to read rather
+/// than one filled in as far as the failure. The image is the committed
+/// fixture with `id_count` patched from 2 to 1, which puts the gid
+/// index its inodes carry past the end of the table.
+#[test]
+fn stat_refuses_an_id_index_past_the_table_without_touching_attr() {
+    let mut bytes = std::fs::read(basic_fixture_path()).unwrap();
+    bytes[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("short-id-table.sqfs");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let cpath = CString::new(path.to_str().unwrap()).unwrap();
+    let fs = unsafe { fs_squashfs_mount(cpath.as_ptr()) };
+    assert!(!fs.is_null(), "mount returned NULL: {}", last_err_str());
+
+    let p = CString::new("/hello.txt").unwrap();
+    let mut attr = unsafe { std::mem::zeroed::<fs_squashfs_attr_t>() };
+    let rc = unsafe { fs_squashfs_stat(fs, p.as_ptr(), &mut attr) };
+    assert_eq!(rc, -1, "stat reported success on an unresolvable owner");
+    assert_eq!(fs_squashfs_last_errno(), 5 /* EIO */);
+    assert_eq!(attr.gid, 0, "gid was written");
+    assert_eq!(attr.uid, 0, "uid was written");
+    assert_eq!(
+        attr.size, 0,
+        "attr was filled in as far as the failure, so a caller ignoring \
+         the return code reads a half-built struct"
+    );
+    unsafe { fs_squashfs_umount(fs) };
+}

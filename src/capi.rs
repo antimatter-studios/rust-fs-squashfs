@@ -211,15 +211,24 @@ pub struct fs_squashfs_dir_iter_t {
 // Helpers
 // ===========================================================================
 
-fn fill_attr(out: &mut fs_squashfs_attr_t, fs: &Filesystem, inode: &Inode) {
+/// Fill the C `attr` struct, or fail without touching it.
+///
+/// The owner resolution can fail — an inode naming an id index the
+/// image's table does not have — and it fills two of the eight fields,
+/// so it goes first: a caller handed -1 gets an `attr` it never had a
+/// reason to read rather than one filled in halfway.
+fn fill_attr(out: &mut fs_squashfs_attr_t, fs: &Filesystem, inode: &Inode) -> crate::Result<()> {
+    let uid = fs.resolve_uid(inode.uid_idx)?;
+    let gid = fs.resolve_gid(inode.gid_idx)?;
     out.inode = inode.inode_number;
     out.mode = inode.permissions & 0o7777;
-    out.uid = fs.resolve_uid(inode.uid_idx);
-    out.gid = fs.resolve_gid(inode.gid_idx);
+    out.uid = uid;
+    out.gid = gid;
     out.size = inode.file_size;
     out.mtime = inode.mtime;
     out.link_count = inode.nlink;
     out.file_type = inode.file_type().to_abi() as u32;
+    Ok(())
 }
 
 fn dir_entry_to_abi(e: &crate::dir::DirEntry) -> fs_squashfs_dirent_t {
@@ -427,11 +436,11 @@ pub unsafe extern "C" fn fs_squashfs_stat(
             let fs = unsafe { &(*fs).fs };
             let path = unsafe { cstr_to_str(path) };
             let attr = unsafe { &mut *attr };
-            match fs.lookup_path(path) {
-                Ok(inode) => {
-                    fill_attr(attr, fs, &inode);
-                    0
-                }
+            match fs
+                .lookup_path(path)
+                .and_then(|inode| fill_attr(attr, fs, &inode))
+            {
+                Ok(()) => 0,
                 Err(e) => {
                     set_err_from(&e, &format!("stat {path}"));
                     -1
@@ -473,11 +482,11 @@ pub unsafe extern "C" fn fs_squashfs_stat_ino(
             }
             let fs = unsafe { &(*fs).fs };
             let attr = unsafe { &mut *attr };
-            match fs.read_inode_by_number(inode_number) {
-                Ok(inode) => {
-                    fill_attr(attr, fs, &inode);
-                    0
-                }
+            match fs
+                .read_inode_by_number(inode_number)
+                .and_then(|inode| fill_attr(attr, fs, &inode))
+            {
+                Ok(()) => 0,
                 Err(e) => {
                     set_err_from(&e, &format!("stat inode {inode_number}"));
                     -1
