@@ -86,6 +86,16 @@ pub fn parse_listing(buf: &[u8]) -> Result<Vec<DirEntry>> {
             let name = buf[p..p + name_len].to_vec();
             p += name_len;
 
+            if name == b"." || name == b".." {
+                return Err(Error::BadDirent("directory entry name is reserved"));
+            }
+            if name.contains(&b'/') {
+                return Err(Error::BadDirent("directory entry name contains '/'"));
+            }
+            if name.contains(&0) {
+                return Err(Error::BadDirent("directory entry name contains NUL"));
+            }
+
             let inode_ref = ((start as u64) << 16) | (offset as u64);
             // The per-entry delta is a signed i16 added to the header base.
             let inode_number = (base_inode as i64 + inode_offset as i64) as u32;
@@ -162,5 +172,34 @@ pub(crate) mod tests {
     #[test]
     fn rejects_truncated_header() {
         assert!(matches!(parse_listing(&[0u8; 5]), Err(Error::BadDirent(_))));
+    }
+
+    #[test]
+    fn rejects_reserved_directory_entry_names() {
+        for name in [b".".as_slice(), b"..".as_slice()] {
+            let buf = synth_listing(0, 1, &[(name, 2, 0, 0)]);
+            assert!(matches!(
+                parse_listing(&buf),
+                Err(Error::BadDirent("directory entry name is reserved"))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_directory_entry_names_with_slash() {
+        let buf = synth_listing(0, 1, &[(b"nested/name", 2, 0, 0)]);
+        assert!(matches!(
+            parse_listing(&buf),
+            Err(Error::BadDirent("directory entry name contains '/'"))
+        ));
+    }
+
+    #[test]
+    fn rejects_directory_entry_names_with_nul() {
+        let buf = synth_listing(0, 1, &[(b"bad\0name", 2, 0, 0)]);
+        assert!(matches!(
+            parse_listing(&buf),
+            Err(Error::BadDirent("directory entry name contains NUL"))
+        ));
     }
 }
