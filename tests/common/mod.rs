@@ -38,8 +38,15 @@ impl BlockRead for MemDev {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
         let v = self.0.lock().unwrap();
         let s = offset as usize;
-        let e = s + buf.len();
-        if e > v.len() {
+        // Saturating, for the same reason the crate itself saturates:
+        // an offset the image asked for can be absurd, and `s + len`
+        // then wraps to a small number that indexes real bytes. This
+        // double used a plain `+`, so a test feeding it `u64::MAX` —
+        // which is exactly what the crate now produces when a table
+        // offset saturates — panicked inside the harness instead of
+        // getting the short read the crate was waiting for.
+        let e = s.saturating_add(buf.len());
+        if s > v.len() || e > v.len() {
             return Err(fs_core::Error::ShortRead {
                 offset,
                 want: buf.len(),

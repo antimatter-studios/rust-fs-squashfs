@@ -292,3 +292,127 @@ fn varied_tree_all_compressors() {
         }
     }
 }
+
+// ===========================================================================
+// Sums over image-supplied offsets
+//
+// Three places add a raw `u64` off the superblock to a value out of an
+// inode. One of them saturated; the other two used a plain `+`, which
+// panics in debug — the profile these tests run in — and wraps in
+// release, which is how the crate ships. A wrapped offset reads some
+// unrelated part of the image as the structure that was asked for.
+//
+// Both profiles matter and they used to disagree, so these run under
+// `cargo test` and `cargo test --release` alike and assert the same
+// thing in each: an error, not a panic and not a plausible answer.
+// ===========================================================================
+
+/// Set one little-endian `u64` field of the superblock.
+fn with_sb_u64(mut img: Vec<u8>, off: usize, value: u64) -> Vec<u8> {
+    img[off..off + 8].copy_from_slice(&value.to_le_bytes());
+    img
+}
+
+/// Open the image and try to reach its root directory, reporting a
+/// panic as a panic rather than letting it end the test.
+///
+/// THE CACHE IS OFF, and that is not incidental. `Filesystem::open`
+/// wraps the device in `fs_core::CachingDevice`, and at the
+/// `am-fs-core` version this crate pins — v0.2.10 — its `read_at`
+/// computes `(offset + buf.len() as u64 - 1) / bs` with a plain `+`.
+/// The saturated offset these tests produce is `u64::MAX`, so that line
+/// panics in debug before this crate's own refusal is reached:
+///
+/// ```text
+/// panicked at rust-fs-core/src/caching_device.rs:167: attempt to add with overflow
+/// ```
+///
+/// It is fixed on `rust-fs-core` main — the same sum now goes through
+/// `checked_add`, tracked as rust-fs-core#34 — but there is no tag past
+/// v0.2.10, so it is not something this repository can pick up yet.
+/// Testing the uncached path asks about this crate's rule rather than
+/// about a dependency's.
+///
+/// WHEN am-fs-core MOVES PAST v0.2.10, change this back to
+/// `Filesystem::open` and delete this paragraph. The cached path is the
+/// one every consumer takes, so leaving the workaround here after its
+/// cause is gone would quietly stop testing the default.
+fn walk_root(bytes: Vec<u8>) -> std::thread::Result<Result<(), Error>> {
+    std::panic::catch_unwind(move || {
+        let dev: Arc<dyn fs_core::BlockRead> = Arc::new(MemDev::new(bytes));
+        let fs = Filesystem::open_with_cache(dev, 0)?;
+        let root = fs.root_inode()?;
+        fs.read_dir(&root)?;
+        Ok(())
+    })
+}
+
+/// An absurd `inode_table_start` plus a large block offset must fail,
+/// not overflow.
+///
+/// `block_offset` is `root_inode_ref >> 16`, so `1 << 56` in the
+/// reference makes `1 << 40` in the offset — the shape the sum cannot
+/// hold. Before this: `panicked at src/metablock.rs: attempt to add
+/// with overflow` in debug, and in release a read from the wrapped
+/// offset.
+#[test]
+fn an_absurd_inode_table_start_errors_rather_than_overflowing() {
+    let img = with_sb_u64(fixture_bytes(), 0x40, 0xffff_ff00_0000_0060);
+    let img = with_sb_u64(img, 0x20, 1u64 << 56); // root_inode_ref
+    let err = walk_root(img)
+        .expect("must not panic")
+        .expect_err("must not resolve a root inode from an offset nothing points at");
+    // The offset is the assertion, not the variant. Saturating puts the
+    // read at u64::MAX, which no device reaches; wrapping puts it at a
+    // small number that names real bytes, and the error you get back
+    // then describes whatever happened to be there.
+    assert!(
+        matches!(
+            err,
+            Error::Block(fs_core::Error::ShortRead {
+                offset: u64::MAX,
+                ..
+            })
+        ),
+        "expected a short read at u64::MAX, got {err:?}"
+    );
+}
+
+/// An absurd `directory_table_start` fails at the offset it names,
+/// rather than at some other offset.
+///
+/// This one cannot demonstrate the overflow, and it is worth being
+/// explicit about why: the committed fixture's root inode has
+/// `dir_start_block == 0`, so the sum is `directory_table_start + 0`
+/// and nothing this test can set in the superblock makes it wrap. A
+/// non-zero `dir_start_block` lives inside a compressed metablock.
+///
+/// What it does establish is that the directory path reaches the device
+/// with the offset it was given, which is what makes the unit test on
+/// `MetadataRef::start_abs` cover this site: `read_dir` now goes
+/// through that function instead of writing the sum out by hand, and
+/// writing it out by hand is how the two came to disagree.
+#[test]
+fn an_absurd_directory_table_start_errors_at_the_offset_it_names() {
+    let absurd = u64::MAX - 8;
+    let img = with_sb_u64(fixture_bytes(), 0x48, absurd);
+    let err = walk_root(img)
+        .expect("must not panic")
+        .expect_err("must not read a directory listing from an offset nothing points at");
+    assert!(
+        matches!(err, Error::Block(fs_core::Error::ShortRead { offset, .. }) if offset == absurd),
+        "expected a short read at {absurd}, got {err:?}"
+    );
+}
+
+/// The positive control for both: the untouched fixture still mounts and
+/// its root still lists.
+///
+/// Without it, a change that refused every image would pass the two
+/// above.
+#[test]
+fn the_untouched_fixture_still_mounts_and_lists() {
+    walk_root(fixture_bytes())
+        .expect("must not panic")
+        .expect("the committed fixture is sound");
+}
