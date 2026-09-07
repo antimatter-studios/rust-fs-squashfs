@@ -546,6 +546,82 @@ mod tests {
         }
     }
 
+    /// A `Filesystem` whose superblock names `directory_table_start`.
+    ///
+    /// `synth_sb` does not take that field, and the directory sum is the
+    /// one this test needs to reach.
+    fn fs_over_with_dir_table(bytes: Vec<u8>, directory_table_start: u64) -> Filesystem {
+        let mut sb_bytes = synth_sb(BLOCK_LOG, 0, 0);
+        sb_bytes[0x48..0x50].copy_from_slice(&directory_table_start.to_le_bytes());
+        Filesystem {
+            dev: Arc::new(MemDev(Mutex::new(bytes))),
+            sb: Superblock::parse(&sb_bytes).unwrap(),
+            comp: Compressor::Gzip,
+            id_table: Vec::new(),
+            fragments: Vec::new(),
+            xattr_ids: None,
+            exports: None,
+            meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+        }
+    }
+
+    /// The directory listing's start is `directory_table_start` plus the
+    /// inode's `dir_start_block`, and that sum must saturate.
+    ///
+    /// The committed image cannot reach this: its root inode has
+    /// `dir_start_block == 0`, so the sum is `a + 0`, which is identical
+    /// under a plain `+` and a `saturating_add` for every `a`. An
+    /// integration test over that fixture is a real test of the offset
+    /// the read names and no test at all of the sum. Both addends have
+    /// to be non-zero and large, and the inode's field is reachable only
+    /// from here.
+    ///
+    /// The assertion is the offset, not the error variant: saturating
+    /// puts the read at `u64::MAX`, which no device reaches, while
+    /// wrapping puts it at a small number that names real bytes.
+    #[test]
+    fn the_directory_listing_start_saturates_rather_than_wrapping() {
+        let fs = fs_over_with_dir_table(vec![0u8; 64 * 1024], u64::MAX - 1000);
+
+        let mut dir = file_inode(100, Vec::new());
+        dir.inode_type = crate::inode::TYPE_BASIC_DIR;
+        dir.dir_start_block = u32::MAX;
+        dir.dir_block_offset = 0;
+
+        match fs.read_dir(&dir) {
+            Err(Error::Block(fs_core::Error::ShortRead { offset, .. })) => assert_eq!(
+                offset,
+                u64::MAX,
+                "the listing must be sought at the saturated offset, not a wrapped one"
+            ),
+            other => panic!("expected a short read at u64::MAX, got {other:?}"),
+        }
+    }
+
+    /// The same sum with an ordinary pair of addends still adds.
+    ///
+    /// Without this, replacing the sum with a constant `u64::MAX` would
+    /// pass the test above.
+    #[test]
+    fn an_ordinary_directory_listing_start_is_the_sum_of_its_parts() {
+        let fs = fs_over_with_dir_table(vec![0u8; 64 * 1024], 1000);
+
+        let mut dir = file_inode(100, Vec::new());
+        dir.inode_type = crate::inode::TYPE_BASIC_DIR;
+        dir.dir_start_block = 24;
+        dir.dir_block_offset = 0;
+
+        // 1024 is inside the 64 KiB buffer, so the read reaches the
+        // device and fails on the zeros there rather than on its offset.
+        match fs.read_dir(&dir) {
+            Err(Error::Block(fs_core::Error::ShortRead { offset, .. })) => {
+                panic!("expected the read to reach offset 1024, but it short-read at {offset}")
+            }
+            Err(_) => {}
+            Ok(_) => panic!("a listing of zeros should not parse"),
+        }
+    }
+
     /// A regular-file inode whose data blocks start at offset 0.
     fn file_inode(file_size: u64, block_sizes: Vec<u32>) -> Inode {
         Inode {

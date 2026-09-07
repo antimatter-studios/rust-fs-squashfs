@@ -328,10 +328,15 @@ fn with_sb_u64(mut img: Vec<u8>, off: usize, value: u64) -> Vec<u8> {
 /// ```
 ///
 /// It is fixed on `rust-fs-core` main — the same sum now goes through
-/// `checked_add` — but there is no tag past v0.2.10, so it is not
-/// something this repository can pick up yet. Testing the uncached path
-/// asks about this crate's rule rather than about a dependency's, and
-/// when the bump lands the cached path will answer the same way.
+/// `checked_add`, tracked as rust-fs-core#34 — but there is no tag past
+/// v0.2.10, so it is not something this repository can pick up yet.
+/// Testing the uncached path asks about this crate's rule rather than
+/// about a dependency's.
+///
+/// WHEN am-fs-core MOVES PAST v0.2.10, change this back to
+/// `Filesystem::open` and delete this paragraph. The cached path is the
+/// one every consumer takes, so leaving the workaround here after its
+/// cause is gone would quietly stop testing the default.
 fn walk_root(bytes: Vec<u8>) -> std::thread::Result<Result<(), Error>> {
     std::panic::catch_unwind(move || {
         let dev: Arc<dyn fs_core::BlockRead> = Arc::new(MemDev::new(bytes));

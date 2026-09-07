@@ -401,8 +401,13 @@ pub(crate) mod tests {
         fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
             let v = self.0.lock().unwrap();
             let start = offset as usize;
-            let end = start + buf.len();
-            if end > v.len() {
+            // Saturating, for the same reason the crate saturates: a
+            // test that feeds this an offset the crate has just refused
+            // — `u64::MAX` — must get the short read back rather than
+            // panic inside the double. Its twin in tests/common/mod.rs
+            // had the same `+` and the same problem.
+            let end = start.saturating_add(buf.len());
+            if start > v.len() || end > v.len() {
                 return Err(fs_core::Error::ShortRead {
                     offset,
                     want: buf.len(),
