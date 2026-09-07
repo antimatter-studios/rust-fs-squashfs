@@ -172,13 +172,36 @@ impl Filesystem {
         self.comp
     }
 
-    /// Resolve a uid index to its real uid (0 if out of range).
-    pub fn resolve_uid(&self, idx: u16) -> u32 {
-        self.id_table.get(idx as usize).copied().unwrap_or(0)
+    /// Resolve a uid index to its real uid.
+    ///
+    /// An index past the id table is an error rather than an answer.
+    /// These used to return `0` for that case, which is not a sentinel:
+    /// uid 0 is `root` and gid 0 is `wheel`, the most privileged answer
+    /// the function can give, and a caller had no way to tell it apart
+    /// from an image that really says root. Anything making an access
+    /// decision from the owner saw root where the image said something
+    /// else, and anything extracting the archive wrote root-owned files
+    /// — the wrong answer leaning in the wrong direction. The kernel's
+    /// `squashfs_get_id` returns `-EINVAL` for exactly this case.
+    pub fn resolve_uid(&self, idx: u16) -> Result<u32> {
+        self.resolve_id(idx, "uid index past the image's id table")
     }
-    /// Resolve a gid index to its real gid (0 if out of range).
-    pub fn resolve_gid(&self, idx: u16) -> u32 {
-        self.id_table.get(idx as usize).copied().unwrap_or(0)
+    /// Resolve a gid index to its real gid. See [`Filesystem::resolve_uid`].
+    pub fn resolve_gid(&self, idx: u16) -> Result<u32> {
+        self.resolve_id(idx, "gid index past the image's id table")
+    }
+
+    /// The one lookup both resolvers are.
+    ///
+    /// `BadInode` rather than `BadSuperblock` because what is broken is
+    /// the pair: an inode naming an index the table does not have. From
+    /// here there is no way to say which of the two is the damaged one,
+    /// and the read that fails is the inode's.
+    fn resolve_id(&self, idx: u16, what: &'static str) -> Result<u32> {
+        self.id_table
+            .get(idx as usize)
+            .copied()
+            .ok_or(Error::BadInode(what))
     }
 
     pub fn read_inode(&self, inode_ref: u64) -> Result<Inode> {

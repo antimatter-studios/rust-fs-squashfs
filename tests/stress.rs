@@ -416,3 +416,54 @@ fn the_untouched_fixture_still_mounts_and_lists() {
         .expect("must not panic")
         .expect("the committed fixture is sound");
 }
+
+// ===========================================================================
+// An id index the image's table cannot answer
+// ===========================================================================
+
+/// Byte offset of `id_count` in the superblock.
+const ID_COUNT_OFF: usize = 0x1A;
+
+/// An index past the id table is refused rather than answered as root.
+///
+/// `resolve_uid` / `resolve_gid` used to return 0 for an index they
+/// could not resolve. Zero is not a sentinel: uid 0 is `root` and gid 0
+/// is `wheel`, the most privileged answer either function can give, and
+/// nothing distinguished it from an image that really says root. The
+/// index comes off the inode and the table length comes off the
+/// superblock, so a truncated or patched image reaches it without
+/// anything else about the image looking wrong.
+///
+/// Measured on the committed fixture, whose table is `[501, 20]`, with
+/// `id_count` patched from 2 to 1:
+///
+/// ```text
+/// id_count=2   /hello.txt  uid_idx=0 gid_idx=1 -> uid=501 gid=20
+/// id_count=1   /hello.txt  uid_idx=0 gid_idx=1 -> uid=501 gid=0   (silently wheel)
+/// ```
+#[test]
+fn an_id_index_past_the_table_is_refused_rather_than_answered_as_root() {
+    let good = open_image(fixture_bytes());
+    let inode = good.lookup_path("/hello.txt").unwrap();
+    assert_eq!(
+        inode.gid_idx, 1,
+        "the fixture stopped using the second id table slot, so this test \
+         no longer reaches a truncated table"
+    );
+    assert_eq!(good.resolve_uid(inode.uid_idx).unwrap(), 501);
+    assert_eq!(good.resolve_gid(inode.gid_idx).unwrap(), 20);
+
+    let mut bytes = fixture_bytes();
+    bytes[ID_COUNT_OFF..ID_COUNT_OFF + 2].copy_from_slice(&1u16.to_le_bytes());
+    let short = open_image(bytes);
+    let inode = short.lookup_path("/hello.txt").unwrap();
+    assert_eq!(
+        short.resolve_uid(inode.uid_idx).unwrap(),
+        501,
+        "the index that is still in range stopped resolving"
+    );
+    match short.resolve_gid(inode.gid_idx) {
+        Err(Error::BadInode(_)) => {}
+        other => panic!("a gid index past the table gave {other:?}"),
+    }
+}
