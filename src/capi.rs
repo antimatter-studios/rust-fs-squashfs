@@ -120,11 +120,60 @@ pub extern "C" fn fs_squashfs_last_errno() -> c_int {
     LAST_ERRNO.with(|c| *c.borrow())
 }
 
-unsafe fn cstr_to_str<'a>(p: *const c_char) -> &'a str {
+/// Decode a C string as a path, or refuse it.
+///
+/// This used to hand back `""` for anything it could not decode, and
+/// the empty string is not an error anywhere downstream: `lookup_path`
+/// splits it into one empty component, drops that, and returns the root
+/// inode as a successful lookup. So `fs_squashfs_stat(fs, "\xff\xfe/passwd")`
+/// answered 0 and filled `attr` with the root directory's inode number,
+/// mode, size and mtime, and `fs_squashfs_dir_open` handed back an
+/// iterator over the root listing. A caller had no way to tell either
+/// from a real hit.
+///
+/// It is reachable rather than theoretical. SquashFS names are raw
+/// bytes with no encoding rule — this crate carries them as `Vec<u8>`
+/// for exactly that reason — so images built on Linux routinely hold
+/// names that are not valid UTF-8, and a caller composing a path from a
+/// name this driver handed it got the root back. Worse, the display
+/// sites use `from_utf8_lossy`, so a name that has been through one has
+/// its invalid bytes replaced by U+FFFD and no longer matches anything:
+/// the caller asks for a file that does exist, spelled slightly wrong,
+/// and is told about the root instead of `ENOENT`.
+///
+/// The error is `EINVAL` because the argument is the problem, and the
+/// message quotes the undecodable bytes so a caller can see which of
+/// its paths this was.
+///
+/// Refusing is the narrow fix. The wider one is to take paths as bytes
+/// and match `DirEntry::name` byte for byte, which would make such a
+/// name *addressable* rather than merely non-fatal; that is an ABI
+/// change and is filed separately as #67.
+unsafe fn cstr_to_path<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
-        return "";
+        // NULL is refused here rather than at each entry point, and it
+        // sets the error slot for the same reason the undecodable case
+        // does: every caller of this returns a failure value straight
+        // away, so whatever it left in the slot is what the caller
+        // reads. Returning `None` silently would answer -1 with errno
+        // still 0.
+        set_err_msg("null path", errno::EINVAL);
+        return None;
     }
-    unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("")
+    let raw = unsafe { CStr::from_ptr(p) };
+    match raw.to_str() {
+        Ok(s) => Some(s),
+        Err(_) => {
+            set_err_msg(
+                &format!(
+                    "path is not valid UTF-8: {:?}",
+                    String::from_utf8_lossy(raw.to_bytes())
+                ),
+                errno::EINVAL,
+            );
+            None
+        }
+    }
 }
 
 // ===========================================================================
@@ -268,7 +317,9 @@ pub unsafe extern "C" fn fs_squashfs_mount(device_path: *const c_char) -> *mut f
         std::ptr::null_mut(),
         AssertUnwindSafe(|| {
             clear_last_error();
-            let path = unsafe { cstr_to_str(device_path) };
+            let Some(path) = (unsafe { cstr_to_path(device_path) }) else {
+                return std::ptr::null_mut();
+            };
             if path.is_empty() {
                 set_err_msg("null or empty device_path", errno::EINVAL);
                 return std::ptr::null_mut();
@@ -434,7 +485,9 @@ pub unsafe extern "C" fn fs_squashfs_stat(
                 return rc;
             }
             let fs = unsafe { &(*fs).fs };
-            let path = unsafe { cstr_to_str(path) };
+            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+                return -1;
+            };
             let attr = unsafe { &mut *attr };
             match fs
                 .lookup_path(path)
@@ -533,7 +586,9 @@ pub unsafe extern "C" fn fs_squashfs_dir_open(
                 return std::ptr::null_mut();
             }
             let fs = unsafe { &(*fs).fs };
-            let path = unsafe { cstr_to_str(path) };
+            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+                return std::ptr::null_mut();
+            };
 
             let inode = match fs.lookup_path(path) {
                 Ok(i) => i,
@@ -612,7 +667,9 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let path = unsafe { cstr_to_str(path) };
+            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+                return -1;
+            };
 
             let inode = match fs.lookup_path(path) {
                 Ok(i) => i,
@@ -659,7 +716,9 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let path = unsafe { cstr_to_str(path) };
+            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+                return -1;
+            };
 
             let inode = match fs.lookup_path(path) {
                 Ok(i) => i,
@@ -728,7 +787,9 @@ pub unsafe extern "C" fn fs_squashfs_listxattr(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let path = unsafe { cstr_to_str(path) };
+            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+                return -1;
+            };
             let inode = match fs.lookup_path(path) {
                 Ok(i) => i,
                 Err(e) => {
@@ -789,8 +850,12 @@ pub unsafe extern "C" fn fs_squashfs_getxattr(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let path = unsafe { cstr_to_str(path) };
-            let name = unsafe { cstr_to_str(name) };
+            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+                return -1;
+            };
+            let Some(name) = (unsafe { cstr_to_path(name) }) else {
+                return -1;
+            };
             let inode = match fs.lookup_path(path) {
                 Ok(i) => i,
                 Err(e) => {
