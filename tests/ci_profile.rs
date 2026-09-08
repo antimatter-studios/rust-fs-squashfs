@@ -338,6 +338,48 @@ fn runs_on_pull_request(wf: &Workflow) -> bool {
 /// Keys whose presence on a step or job means its result does not gate.
 const NON_GATING_KEYS: [&str; 2] = ["if", "continue-on-error"];
 
+/// The run commands of steps that run in debug AND actually gate a
+/// pull request -- without requiring the handshake.
+///
+/// The headline assertion used the line-based scan while only the
+/// handshake assertion was step-aware, so under `if: false` the
+/// headline PASSED and its failure message would have claimed the
+/// pull-request gate could see an overflow when the step it names does
+/// not run. Every defeat spelling still turned the suite red through
+/// the other assertion, so this was a precision defect rather than a
+/// hole -- but it left the "runs without --release" property verified
+/// line-based, and defeatable if the handshake assertion were ever
+/// weakened. Both halves are step-aware now. Found on the sibling
+/// `rust-fs-btrfs` copy of this guard and corrected here rather than
+/// left to diverge.
+fn gating_runs_with_overflow_checks(workflow: &str) -> Vec<String> {
+    let wf = parse_workflow(workflow);
+    if !runs_on_pull_request(&wf) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for job in &wf.jobs {
+        if job
+            .keys
+            .iter()
+            .any(|k| NON_GATING_KEYS.contains(&k.as_str()))
+        {
+            continue;
+        }
+        for step in &job.steps {
+            if step
+                .keys
+                .iter()
+                .any(|k| NON_GATING_KEYS.contains(&k.as_str()))
+            {
+                continue;
+            }
+            out.extend(runs_with_overflow_checks(&step.run));
+        }
+    }
+    out
+}
+
 /// The run commands of steps that both cover the library in debug with
 /// the handshake AND actually gate a pull request.
 fn gating_runs_that_prove_the_build_traps(workflow: &str) -> Vec<String> {
@@ -400,7 +442,7 @@ fn the_pr_gate_still_tests_in_a_profile_that_can_see_an_overflow() {
     let path = ci_yml();
     let workflow = read_or_panic(&path);
 
-    let debug_runs = runs_with_overflow_checks(&workflow);
+    let debug_runs = gating_runs_with_overflow_checks(&workflow);
     assert!(
         !debug_runs.is_empty(),
         "no `cargo test` in {} runs without `--release`, so a defect whose \
