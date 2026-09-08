@@ -383,3 +383,119 @@ fn stat_refuses_an_id_index_past_the_table_without_touching_attr() {
     );
     unsafe { fs_squashfs_umount(fs) };
 }
+
+// ---------------------------------------------------------------------------
+// A path the C ABI cannot decode
+// ---------------------------------------------------------------------------
+
+/// A path whose bytes are not UTF-8, as a C string.
+fn undecodable_path() -> Vec<i8> {
+    // "/caf\xe9.txt" — latin-1 for "café.txt", which is what a name
+    // written on a Linux box with a non-UTF-8 locale looks like.
+    let mut bytes: Vec<u8> = b"/caf".to_vec();
+    bytes.push(0xE9);
+    bytes.extend_from_slice(b".txt\0");
+    bytes.into_iter().map(|b| b as i8).collect()
+}
+
+/// `stat` refuses a path it cannot decode rather than answering about
+/// the root.
+///
+/// `cstr_to_str` used to return `""` for anything undecodable, and the
+/// empty string is not an error downstream: `lookup_path` splits it
+/// into one empty component, drops it, and returns the root inode as a
+/// successful lookup. So the call answered 0 and filled `attr` with the
+/// root directory's inode number, mode, size and mtime — indistinguishable
+/// from a real hit.
+#[test]
+fn stat_refuses_a_path_it_cannot_decode_rather_than_reporting_the_root() {
+    let fs = mount_fixture();
+    let path = undecodable_path();
+    let mut attr = unsafe { std::mem::zeroed::<fs_squashfs_attr_t>() };
+
+    // What the root actually is, so the assertion can name it.
+    let root = CString::new("/").unwrap();
+    let mut root_attr = unsafe { std::mem::zeroed::<fs_squashfs_attr_t>() };
+    assert_eq!(
+        unsafe { fs_squashfs_stat(fs, root.as_ptr(), &mut root_attr) },
+        0
+    );
+
+    let rc = unsafe { fs_squashfs_stat(fs, path.as_ptr(), &mut attr) };
+    assert_eq!(
+        rc, -1,
+        "an undecodable path was answered as a successful stat"
+    );
+    assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    assert_ne!(
+        attr.inode, root_attr.inode,
+        "the root inode was reported for a path that names no file"
+    );
+    assert_eq!(attr.inode, 0, "attr was written for a refused call");
+    unsafe { fs_squashfs_umount(fs) };
+}
+
+/// The directory iterator likewise: an undecodable path is not the root
+/// listing.
+///
+/// This is the one that hurts most in practice — a caller walking a
+/// tree, composing paths from names this driver handed back, gets the
+/// root's entries again and walks in a circle.
+#[test]
+fn dir_open_refuses_a_path_it_cannot_decode() {
+    let fs = mount_fixture();
+    let path = undecodable_path();
+    let iter = unsafe { fs_squashfs_dir_open(fs, path.as_ptr()) };
+    assert!(
+        iter.is_null(),
+        "an undecodable path opened a directory iterator"
+    );
+    assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    unsafe { fs_squashfs_umount(fs) };
+}
+
+/// And reading a file, where the old failure at least failed — but for
+/// the wrong reason, naming the wrong object.
+#[test]
+fn read_file_refuses_a_path_it_cannot_decode_with_einval() {
+    let fs = mount_fixture();
+    let path = undecodable_path();
+    let mut buf = [0u8; 16];
+    let n = unsafe {
+        fs_squashfs_read_file(
+            fs,
+            path.as_ptr(),
+            buf.as_mut_ptr() as *mut std::ffi::c_void,
+            0,
+            buf.len() as u64,
+        )
+    };
+    assert!(n < 0, "an undecodable path read {n} bytes");
+    assert_eq!(
+        fs_squashfs_last_errno(),
+        22, /* EINVAL */
+        "refused, but as something other than a bad argument: {}",
+        last_err_str()
+    );
+    unsafe { fs_squashfs_umount(fs) };
+}
+
+/// A path that decodes is still a path.
+///
+/// The control for the three above: a decoder that refused everything
+/// would satisfy them all, and would be a worse driver than the one
+/// with the defect.
+#[test]
+fn a_decodable_path_still_resolves() {
+    let fs = mount_fixture();
+    let p = CString::new("/hello.txt").unwrap();
+    let mut attr = unsafe { std::mem::zeroed::<fs_squashfs_attr_t>() };
+    assert_eq!(
+        unsafe { fs_squashfs_stat(fs, p.as_ptr(), &mut attr) },
+        0,
+        "an ordinary path was refused: {}",
+        last_err_str()
+    );
+    assert_eq!(attr.size, 3);
+    unsafe { fs_squashfs_umount(fs) };
+}
