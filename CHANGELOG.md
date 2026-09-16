@@ -63,6 +63,19 @@ never does.
   `read_block` hands back a shared `Arc<Vec<u8>>` rather than a fresh
   `Vec`. Callers going through `Filesystem` are unaffected.
 
+### Fixed
+
+- **A superblock is checked against the image it describes.** Only the
+  magic, block size and major version were checked, so `bytes_used` = 1 TiB
+  over a 20 KiB file mounted and was published through
+  `fs_squashfs_get_volume_info`, and table starts past the end, inside the
+  superblock or out of order were accepted. `Filesystem::open` now refuses,
+  each with its own `BadSuperblock` reason: `bytes_used` beyond the device;
+  an unknown minor version (the kernel's rule); a table start outside
+  `[96, bytes_used)`; table starts out of the order `mksquashfs` writes them;
+  a root inode reference outside the inode table. A 3.x image is refused
+  as the wrong version rather than as a bad block size.
+
 ## [0.1.5] — 2026-09-06
 
 ### Fixed
