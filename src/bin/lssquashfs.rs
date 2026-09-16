@@ -208,11 +208,19 @@ fn print_entry(fs: &Filesystem, name: &str, inode: &Inode) {
     } else {
         String::new()
     };
+    // A device's size is meaningless; `ls -l` and `unsquashfs -ll` print
+    // its major and minor in that column instead.
+    let size = match inode.file_type() {
+        FileType::CharDev | FileType::BlockDev => {
+            format!("{}, {}", inode.rdev_major(), inode.rdev_minor())
+        }
+        _ => inode.file_size.to_string(),
+    };
     println!(
         "{}{:04o} {:>10} {}{}",
         kind,
         inode.permissions & 0o7777,
-        inode.file_size,
+        size,
         name,
         suffix
     );

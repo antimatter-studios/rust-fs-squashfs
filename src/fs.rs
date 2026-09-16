@@ -120,6 +120,7 @@ impl Filesystem {
             fs_core::CachingDevice::read_only(dev, u64::from(sb.block_size), blocks)
         };
         let sb = superblock::read(&*dev)?;
+        sb.validate_against_device(dev.size_bytes())?;
         // `compressor()` has already rejected an id this build does not
         // know, so the guard below cannot fire today: `is_supported` is
         // `true` for every codec, including legacy lzma, which is
@@ -663,6 +664,7 @@ mod tests {
             fragment_offset: 0,
             block_sizes,
             symlink_target: Vec::new(),
+            rdev: 0,
             xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         }
     }

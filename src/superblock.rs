@@ -16,6 +16,9 @@ pub const SUPERBLOCK_SIZE: usize = 96;
 /// SquashFS metadata blocks are a fixed 8 KiB when decompressed.
 pub const METADATA_SIZE: usize = 8192;
 
+/// The one minor version of SquashFS 4 there is (`SQUASHFS_MINOR`).
+pub const SQUASHFS_MINOR: u16 = 0;
+
 /// Block-size bounds. SquashFS supports 4 KiB .. 1 MiB data blocks
 /// (block_log 12..=20). Reject anything outside to catch corruption.
 const MIN_BLOCK_LOG: u16 = 12;
@@ -65,6 +68,22 @@ impl Superblock {
             return Err(Error::NotSquashfs);
         }
 
+        // The version first: a 3.x superblock shares the magic and the
+        // major's offset, but not `block_log`'s, and was refused as a bad
+        // block size rather than as the version it is.
+        let version_major = rd_u16(0x1C);
+        let version_minor = rd_u16(0x1E);
+        if version_major != 4 {
+            return Err(Error::BadSuperblock("only SquashFS 4.x is supported"));
+        }
+        // As the kernel does (`s_minor > SQUASHFS_MINOR`): a later minor
+        // may change the layout this parser assumes.
+        if version_minor > SQUASHFS_MINOR {
+            return Err(Error::BadSuperblock(
+                "unknown SquashFS minor version (only 4.0 is supported)",
+            ));
+        }
+
         let block_log = rd_u16(0x16);
         if !(MIN_BLOCK_LOG..=MAX_BLOCK_LOG).contains(&block_log) {
             return Err(Error::BadSuperblock("block_log out of range"));
@@ -72,12 +91,6 @@ impl Superblock {
         let block_size = rd_u32(0x0C);
         if block_size != 1u32 << block_log {
             return Err(Error::BadSuperblock("block_size != 1 << block_log"));
-        }
-
-        let version_major = rd_u16(0x1C);
-        let version_minor = rd_u16(0x1E);
-        if version_major != 4 {
-            return Err(Error::BadSuperblock("only SquashFS 4.x is supported"));
         }
 
         Ok(Superblock {
@@ -101,6 +114,94 @@ impl Superblock {
             fragment_table_start: rd_u64(0x50),
             export_table_start: rd_u64(0x58),
         })
+    }
+
+    /// Check the superblock's sizes and table starts against the device
+    /// it was read from.
+    ///
+    /// `parse` sees 96 bytes and nothing else, so everything here was
+    /// taken on trust: a header claiming `bytes_used` = 1 TiB over a
+    /// 20 KiB file mounted and published a terabyte through
+    /// `fs_squashfs_get_volume_info`, and table starts past the end, inside
+    /// the superblock or out of order opened cleanly and failed later as a
+    /// short read at an absurd offset, if at all (#48).
+    ///
+    /// The layout `mksquashfs` writes, and the kernel's
+    /// `squashfs_fill_super` relies on, is the inode table, then the
+    /// directory table, then the fragment, export, id and xattr tables'
+    /// index arrays in that order, each preceded by its own metadata, all
+    /// below `bytes_used`. Absent optional tables carry [`NO_TABLE`] and
+    /// are left out of the ordering.
+    ///
+    /// [`NO_TABLE`]: crate::table::NO_TABLE
+    pub fn validate_against_device(&self, device_size: u64) -> Result<()> {
+        use crate::table::NO_TABLE;
+        if self.bytes_used > device_size {
+            return Err(Error::BadSuperblock(
+                "bytes_used exceeds the size of the device",
+            ));
+        }
+        let start = SUPERBLOCK_SIZE as u64;
+        let in_image = |t: u64| (start..self.bytes_used).contains(&t);
+        // Required tables.
+        for t in [
+            self.inode_table_start,
+            self.directory_table_start,
+            self.id_table_start,
+        ] {
+            if !in_image(t) {
+                return Err(Error::BadSuperblock(
+                    "a table starts outside [superblock end, bytes_used)",
+                ));
+            }
+        }
+        // Optional tables: absent, or inside the image.
+        for t in [
+            self.fragment_table_start,
+            self.export_table_start,
+            self.xattr_id_table_start,
+        ] {
+            if t != NO_TABLE && !in_image(t) {
+                return Err(Error::BadSuperblock(
+                    "a table starts outside [superblock end, bytes_used)",
+                ));
+            }
+        }
+        // The inode table is strictly before the directory table (the
+        // root inode lives in it); every later table starts at or after
+        // the one before it.
+        if self.inode_table_start >= self.directory_table_start {
+            return Err(Error::BadSuperblock(
+                "table starts are out of order (inode table not before directory table)",
+            ));
+        }
+        let mut prev = self.directory_table_start;
+        for t in [
+            self.fragment_table_start,
+            self.export_table_start,
+            self.id_table_start,
+            self.xattr_id_table_start,
+        ] {
+            if t == NO_TABLE {
+                continue;
+            }
+            if t < prev {
+                return Err(Error::BadSuperblock("table starts are out of order"));
+            }
+            prev = t;
+        }
+        // The root inode's metadata block starts inside the inode table.
+        let root_block = self.root_inode_ref >> 16;
+        if self
+            .inode_table_start
+            .checked_add(root_block)
+            .is_none_or(|b| b >= self.directory_table_start)
+        {
+            return Err(Error::BadSuperblock(
+                "root inode reference points outside the inode table",
+            ));
+        }
+        Ok(())
     }
 
     /// Resolve the archive-wide compressor. Returns
