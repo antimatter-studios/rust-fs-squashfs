@@ -13,7 +13,7 @@
 
 mod common;
 
-use std::ffi::{CStr, CString};
+use std::ffi::{c_char, CStr, CString};
 
 use common::basic_fixture_path;
 use fs_squashfs::capi::*;
@@ -292,7 +292,7 @@ fn dir_open_null_args_error_not_crash() {
 fn readlink_returns_target() {
     let fs = mount_fixture();
     let p = CString::new("/link").unwrap();
-    let mut buf = [0i8; 256];
+    let mut buf: [c_char; 256] = [0; 256];
     let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), buf.len()) };
     assert_eq!(rc, 0, "readlink /link failed: {}", last_err_str());
     let target = unsafe { CStr::from_ptr(buf.as_ptr()) }
@@ -306,7 +306,7 @@ fn readlink_returns_target() {
 fn readlink_on_regular_file_is_einval() {
     let fs = mount_fixture();
     let p = CString::new("/hello.txt").unwrap();
-    let mut buf = [0i8; 256];
+    let mut buf: [c_char; 256] = [0; 256];
     let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), buf.len()) };
     assert_eq!(rc, -1, "readlink on a file must fail");
     assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
@@ -318,7 +318,7 @@ fn readlink_buffer_too_small_is_erange() {
     let fs = mount_fixture();
     let p = CString::new("/link").unwrap();
     // Target is "hello.txt" (9 bytes); 4 bytes can't fit it + NUL.
-    let mut buf = [0i8; 4];
+    let mut buf: [c_char; 4] = [0; 4];
     let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), buf.len()) };
     assert_eq!(rc, -1);
     assert_eq!(fs_squashfs_last_errno(), 34 /* ERANGE */);
@@ -329,7 +329,7 @@ fn readlink_buffer_too_small_is_erange() {
 fn readlink_zero_bufsize_is_einval() {
     let fs = mount_fixture();
     let p = CString::new("/link").unwrap();
-    let mut buf = [0i8; 4];
+    let mut buf: [c_char; 4] = [0; 4];
     let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), 0) };
     assert_eq!(rc, -1);
     assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
@@ -389,13 +389,20 @@ fn stat_refuses_an_id_index_past_the_table_without_touching_attr() {
 // ---------------------------------------------------------------------------
 
 /// A path whose bytes are not UTF-8, as a C string.
-fn undecodable_path() -> Vec<i8> {
+fn undecodable_path() -> Vec<c_char> {
     // "/caf\xe9.txt" — latin-1 for "café.txt", which is what a name
     // written on a Linux box with a non-UTF-8 locale looks like.
     let mut bytes: Vec<u8> = b"/caf".to_vec();
     bytes.push(0xE9);
     bytes.extend_from_slice(b".txt\0");
-    bytes.into_iter().map(|b| b as i8).collect()
+    // `c_char` is `i8` on x86_64 and Apple targets and `u8` on
+    // aarch64-linux, so neither `as i8` nor `as c_char` is right on all of
+    // them: the first does not type-check there and the second is a
+    // no-op cast clippy refuses. `from_ne_bytes` exists on both (#78).
+    bytes
+        .into_iter()
+        .map(|b| c_char::from_ne_bytes([b]))
+        .collect()
 }
 
 /// `stat` refuses a path it cannot decode rather than answering about
