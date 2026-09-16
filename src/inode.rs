@@ -129,6 +129,16 @@ pub struct Inode {
     // ----- symlink -----
     pub symlink_target: Vec<u8>,
 
+    // ----- block / character device -----
+    /// The device number exactly as stored, or 0 for every other type.
+    ///
+    /// Linux's `new_encode_dev` packing, which is a kernel convention
+    /// rather than a SquashFS one, so the raw value is what is kept:
+    /// major in bits 8..20, minor in bits 0..8 with its high bits in
+    /// 20..32. [`Inode::rdev_major`] and [`Inode::rdev_minor`] decode it
+    /// the way the in-kernel driver does.
+    pub rdev: u32,
+
     /// Index into the xattr id table, or [`SQUASHFS_INVALID_XATTR`] when
     /// this inode has no extended attributes.
     ///
@@ -153,6 +163,16 @@ impl Inode {
     }
     pub fn is_symlink(&self) -> bool {
         matches!(self.file_type(), FileType::Symlink)
+    }
+
+    /// The device's major number (kernel `new_decode_dev`).
+    pub fn rdev_major(&self) -> u32 {
+        (self.rdev & 0xfff00) >> 8
+    }
+
+    /// The device's minor number (kernel `new_decode_dev`).
+    pub fn rdev_minor(&self) -> u32 {
+        (self.rdev & 0xff) | ((self.rdev >> 12) & 0xfff00)
     }
 
     /// True if the inode carries extended attributes.
@@ -215,6 +235,7 @@ impl Inode {
             fragment_offset: 0,
             block_sizes: Vec::new(),
             symlink_target: Vec::new(),
+            rdev: 0,
             xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         };
 
@@ -272,11 +293,11 @@ impl Inode {
             }
             TYPE_BASIC_BLKDEV | TYPE_BASIC_CHRDEV => {
                 inode.nlink = cur.read_u32()?;
-                let _rdev = cur.read_u32()?;
+                inode.rdev = cur.read_u32()?;
             }
             TYPE_EXT_BLKDEV | TYPE_EXT_CHRDEV => {
                 inode.nlink = cur.read_u32()?;
-                let _rdev = cur.read_u32()?;
+                inode.rdev = cur.read_u32()?;
                 inode.xattr_index = cur.read_u32()?;
             }
             TYPE_BASIC_FIFO | TYPE_BASIC_SOCKET => {
@@ -368,6 +389,69 @@ mod tests {
         assert!(block_count(u64::MAX, 4096, SQUASHFS_INVALID_FRAG).is_err());
     }
 
+    /// Parse one inode laid out by hand in an uncompressed metadata block
+    /// at offset 96, the inode table's start.
+    fn read_one(inode_bytes: &[u8]) -> Inode {
+        use crate::metablock::tests::MemDev;
+        use crate::superblock::tests::synth_sb;
+        use std::sync::Mutex;
+        let sb = Superblock::parse(&synth_sb(17, 0, 96)).unwrap();
+        let mut img = vec![0u8; 96];
+        img.extend_from_slice(&(inode_bytes.len() as u16 | 0x8000).to_le_bytes());
+        img.extend_from_slice(inode_bytes);
+        img.resize(8192, 0);
+        Inode::read(&MemDev(Mutex::new(img)), &sb, 0, None).unwrap()
+    }
+
+    fn device_inode(inode_type: u16, tail: &[u32]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&inode_type.to_le_bytes());
+        b.extend_from_slice(&0o660u16.to_le_bytes()); // permissions
+        b.extend_from_slice(&0u16.to_le_bytes()); // uid_idx
+        b.extend_from_slice(&0u16.to_le_bytes()); // gid_idx
+        b.extend_from_slice(&0u32.to_le_bytes()); // mtime
+        b.extend_from_slice(&5u32.to_le_bytes()); // inode_number
+        for v in tail {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b
+    }
+
+    /// `squashfs_ldev_inode`: nlink, rdev, xattr -- in that order. The
+    /// extended form is the one where an offset error in `rdev` would
+    /// also corrupt the xattr index. `mksquashfs` 4.6.1 does not write it
+    /// for pseudo devices, so the layout is built here from the header
+    /// (#57). The basic form beside it is covered by
+    /// `tests/device_oracle.rs` against `unsquashfs`.
+    #[test]
+    fn an_extended_device_inode_keeps_rdev_and_its_xattr_index() {
+        // major 259, minor 1 in new_encode_dev packing.
+        let rdev = (259 << 8) | 1;
+        let ino = read_one(&device_inode(TYPE_EXT_BLKDEV, &[2, rdev, 7]));
+        assert_eq!(ino.nlink, 2);
+        assert_eq!(ino.rdev, rdev);
+        assert_eq!((ino.rdev_major(), ino.rdev_minor()), (259, 1));
+        assert_eq!(ino.xattr_index, 7);
+
+        let ino = read_one(&device_inode(TYPE_EXT_CHRDEV, &[1, (1 << 8) | 3, 0]));
+        assert_eq!((ino.rdev_major(), ino.rdev_minor()), (1, 3));
+        assert_eq!(ino.xattr_index, 0);
+    }
+
+    /// The kernel's `new_decode_dev` for a minor above 255 and a major
+    /// above 255, which the oracle test cannot use (squashfs-tools 4.5.1's
+    /// `unsquashfs -lln` decodes those differently).
+    #[test]
+    fn rdev_decodes_the_kernel_packing_beyond_eight_bits() {
+        let ino = read_one(&device_inode(
+            TYPE_BASIC_CHRDEV,
+            &[1, (70000 & 0xff) | (4095 << 8) | ((70000 & !0xff) << 12)],
+        ));
+        assert_eq!((ino.rdev_major(), ino.rdev_minor()), (4095, 70000));
+        let fifo = read_one(&device_inode(TYPE_BASIC_FIFO, &[1]));
+        assert_eq!(fifo.rdev, 0, "a FIFO carries no device number");
+    }
+
     #[test]
     fn dir_listing_len_subtracts_three() {
         let mut ino = Inode {
@@ -386,6 +470,7 @@ mod tests {
             fragment_offset: 0,
             block_sizes: Vec::new(),
             symlink_target: Vec::new(),
+            rdev: 0,
             xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         };
         // file_size == 3 -> empty listing.

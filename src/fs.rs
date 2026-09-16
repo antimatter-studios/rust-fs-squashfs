@@ -664,6 +664,7 @@ mod tests {
             fragment_offset: 0,
             block_sizes,
             symlink_target: Vec::new(),
+            rdev: 0,
             xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         }
     }
