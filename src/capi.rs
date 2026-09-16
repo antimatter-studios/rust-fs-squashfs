@@ -149,7 +149,11 @@ pub extern "C" fn fs_squashfs_last_errno() -> c_int {
 /// and match `DirEntry::name` byte for byte, which would make such a
 /// name *addressable* rather than merely non-fatal; that is an ABI
 /// change and is filed separately as #67.
-unsafe fn cstr_to_path<'a>(p: *const c_char) -> Option<&'a str> {
+///
+/// `what` names the argument in both messages. `fs_squashfs_getxattr`
+/// decodes an attribute name through this too, and a hardcoded "path"
+/// sent a caller with a bad name looking at a good path (#69).
+unsafe fn cstr_to_path<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
     if p.is_null() {
         // NULL is refused here rather than at each entry point, and it
         // sets the error slot for the same reason the undecodable case
@@ -157,7 +161,7 @@ unsafe fn cstr_to_path<'a>(p: *const c_char) -> Option<&'a str> {
         // away, so whatever it left in the slot is what the caller
         // reads. Returning `None` silently would answer -1 with errno
         // still 0.
-        set_err_msg("null path", errno::EINVAL);
+        set_err_msg(&format!("null {what}"), errno::EINVAL);
         return None;
     }
     let raw = unsafe { CStr::from_ptr(p) };
@@ -166,7 +170,7 @@ unsafe fn cstr_to_path<'a>(p: *const c_char) -> Option<&'a str> {
         Err(_) => {
             set_err_msg(
                 &format!(
-                    "path is not valid UTF-8: {:?}",
+                    "{what} is not valid UTF-8: {:?}",
                     String::from_utf8_lossy(raw.to_bytes())
                 ),
                 errno::EINVAL,
@@ -322,7 +326,7 @@ pub unsafe extern "C" fn fs_squashfs_mount(device_path: *const c_char) -> *mut f
         std::ptr::null_mut(),
         AssertUnwindSafe(|| {
             clear_last_error();
-            let Some(path) = (unsafe { cstr_to_path(device_path) }) else {
+            let Some(path) = (unsafe { cstr_to_path(device_path, "path") }) else {
                 return std::ptr::null_mut();
             };
             if path.is_empty() {
@@ -490,7 +494,7 @@ pub unsafe extern "C" fn fs_squashfs_stat(
                 return rc;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
                 return -1;
             };
             let attr = unsafe { &mut *attr };
@@ -591,7 +595,7 @@ pub unsafe extern "C" fn fs_squashfs_dir_open(
                 return std::ptr::null_mut();
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
                 return std::ptr::null_mut();
             };
 
@@ -672,7 +676,7 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
                 return -1;
             };
 
@@ -721,7 +725,7 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
                 return -1;
             };
 
@@ -792,7 +796,7 @@ pub unsafe extern "C" fn fs_squashfs_listxattr(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
                 return -1;
             };
             let inode = match fs.lookup_path(path) {
@@ -855,10 +859,10 @@ pub unsafe extern "C" fn fs_squashfs_getxattr(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path) }) else {
+            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
                 return -1;
             };
-            let Some(name) = (unsafe { cstr_to_path(name) }) else {
+            let Some(name) = (unsafe { cstr_to_path(name, "xattr name") }) else {
                 return -1;
             };
             let inode = match fs.lookup_path(path) {
