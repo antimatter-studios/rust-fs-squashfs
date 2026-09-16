@@ -214,6 +214,20 @@ fn what_a_read_costs_in_calls_to_the_device() {
         uncached.walk.reads > 0 && uncached.stat.reads > 0,
         "no calls reached the device, so the counter is not wired to the mount"
     );
+    // THE READ PASS TOO, AND BY BYTES. The guard above named walk and
+    // stat only, and the read pass threw its results away, so a
+    // `read_file` that failed every time reported `0 reads 0 bytes` --
+    // a better score -- and passed (#79). `measure_one` now refuses a
+    // failed lookup or read outright; this refuses a read that answered
+    // without the device. Uncached only: the cached passes may reach
+    // zero, which is the point of them.
+    assert!(
+        uncached.read.reads > 0 && uncached.read.bytes > 0,
+        "the read pass reached the device {} times for {} bytes, so it read nothing \
+         and its figures measure nothing",
+        uncached.read.reads,
+        uncached.read.bytes
+    );
     for (what, un, ca, bo) in [
         ("walk", &uncached.walk, &cached.walk, &both.walk),
         ("stat", &uncached.stat, &cached.stat, &both.stat),
@@ -272,17 +286,25 @@ fn measure_one(img: &Path, blocks: usize, meta_blocks: usize) -> Pass {
     // its target.
     let stat = measure(&counting, files.len(), || {
         for p in &files {
-            let _ = fs.lookup_path(p);
+            if let Err(e) = fs.lookup_path(p) {
+                panic!("stat pass: lookup {p} failed: {e:?}");
+            }
         }
     });
     report("stat", &stat);
 
     let read = measure(&counting, files.len(), || {
+        // A failure here is refused rather than discarded: a failed
+        // lookup or read does less work, which reads as a cheaper pass.
         for p in &files {
-            if let Ok(inode) = fs.lookup_path(p) {
-                let mut buf = vec![0u8; inode.file_size as usize];
-                let _ = fs.read_file(&inode, 0, &mut buf);
-            }
+            let inode = fs
+                .lookup_path(p)
+                .unwrap_or_else(|e| panic!("read pass: lookup {p} failed: {e:?}"));
+            let mut buf = vec![0u8; inode.file_size as usize];
+            let n = fs
+                .read_file(&inode, 0, &mut buf)
+                .unwrap_or_else(|e| panic!("read pass: read {p} failed: {e:?}"));
+            assert_eq!(n, buf.len(), "read pass: short read of {p}");
         }
     });
     report("read", &read);
