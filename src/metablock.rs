@@ -290,6 +290,9 @@ pub struct MetaCursor<'a, R: BlockRead + ?Sized> {
     buf: Window,
     /// Read cursor within `buf`.
     pos: usize,
+    /// No metadata block at or past this absolute offset belongs to the
+    /// table being read, and the reason to report if one is asked for.
+    limit: Option<(u64, &'static str)>,
 }
 
 impl<'a, R: BlockRead + ?Sized> MetaCursor<'a, R> {
@@ -322,11 +325,29 @@ impl<'a, R: BlockRead + ?Sized> MetaCursor<'a, R> {
             next_abs: next,
             buf: Window::Whole(block),
             pos: in_block as usize,
+            limit: None,
         })
+    }
+
+    /// Refuse to pull a block starting at or past `end_abs`, failing with
+    /// `BadMetadata(why)` instead.
+    ///
+    /// Without it a record that declares more bytes than its table holds
+    /// reads on through the tables after it, decompressing every block,
+    /// until a device read fails -- and zero-filled metadata decompresses
+    /// 248:1, so that is not a small bound (#45).
+    pub fn with_limit(mut self, end_abs: u64, why: &'static str) -> Self {
+        self.limit = Some((end_abs, why));
+        self
     }
 
     /// Pull one more metadata block onto the tail of `buf`.
     fn refill(&mut self) -> Result<()> {
+        if let Some((end, why)) = self.limit {
+            if self.next_abs >= end {
+                return Err(Error::BadMetadata(why));
+            }
+        }
         let (block, next) = read_block(self.dev, self.sb, self.next_abs, self.cache)?;
         if block.is_empty() {
             return Err(Error::BadMetadata(
