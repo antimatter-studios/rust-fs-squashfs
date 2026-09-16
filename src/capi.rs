@@ -210,6 +210,10 @@ pub struct fs_squashfs_attr_t {
     pub mtime: u32,
     pub link_count: u32,
     pub file_type: u32, // fs_squashfs_file_type_t
+    /// Raw device number for block/char devices, 0 otherwise. Linux
+    /// `new_encode_dev` packing; appended last so the fields before it
+    /// keep their offsets.
+    pub rdev: u32,
 }
 
 #[repr(C)]
@@ -277,6 +281,7 @@ fn fill_attr(out: &mut fs_squashfs_attr_t, fs: &Filesystem, inode: &Inode) -> cr
     out.mtime = inode.mtime;
     out.link_count = inode.nlink;
     out.file_type = inode.file_type().to_abi() as u32;
+    out.rdev = inode.rdev;
     Ok(())
 }
 

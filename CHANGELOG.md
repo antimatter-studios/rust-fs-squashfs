@@ -8,6 +8,14 @@ never does.
 
 ### Added
 
+- **Device nodes keep their major and minor numbers.** The parser read
+  each block and character device's `rdev` and dropped it, so every
+  device in an image reported 0:0. `Inode::rdev` holds the raw value
+  (Linux `new_encode_dev` packing), with `rdev_major` / `rdev_minor` to
+  decode it; `lssquashfs ls` prints `major, minor` where `ls -l` does.
+  **Breaking:** `fs_squashfs_attr_t` gains a trailing `uint32_t rdev`, so
+  the struct is larger and C consumers must rebuild; `Inode` gains a
+  public field, so code building one with a struct literal must add it.
 - **Extended attributes can be read.** Every extended inode carried an
   `xattr` index and every one of them threw it away, while the
   superblock's `xattr_id_table_start` was parsed and never used again —
