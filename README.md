@@ -31,15 +31,25 @@ LZO1X decoder.
 ## Crate layout
 
 - `superblock` — 96-byte superblock parse + validate
-- `decompress` — codec dispatch (gzip / xz / lz4 / zstd / lzo, all pure-Rust)
-- `lzo1x` — clean-room LZO1X decompressor (no liblzo2-derived code)
-- `metablock` — 8 KiB metadata-block reader + cross-block cursor
-- `table` — indirect lookup tables (id, fragment)
+- `decompress` — codec dispatch (gzip / xz / lz4 / zstd / lzo, plus legacy lzma
+  best-effort, all pure-Rust). LZO1X is decoded by the separate
+  [`am-lzo1x`](https://crates.io/crates/am-lzo1x) crate, a clean-room decoder
+  with no liblzo2-derived code
+- `metablock` — 8 KiB metadata-block reader + cross-block cursor, and the
+  decompressed-metadata cache
+- `table` — indirect lookup tables (id, fragment, export)
 - `inode` — all SquashFS inode shapes
 - `dir` — directory-listing parser
 - `xattr` — extended attributes: the three-level id table and the name/value pairs
 - `fs` — top-level handle: path lookup, dir listing, file/symlink read, attributes
+- `error` — the crate's `Error` type and its errno mapping for the C ABI
 - `capi` — C ABI exports matching `include/fs_squashfs.h`
+
+A mount holds two caches: `fs::DEFAULT_CACHE_BLOCKS` of the archive's blocks as
+they sit on disk (`Filesystem::open_with_cache` sizes it; zero disables it), and
+`fs::DEFAULT_META_CACHE_BLOCKS` metadata blocks after decompression
+(`Filesystem::set_meta_cache_capacity`). What each saves is measured in
+[`docs/read-path-cost.md`](docs/read-path-cost.md).
 
 ## CLI
 

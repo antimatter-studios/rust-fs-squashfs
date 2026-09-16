@@ -46,6 +46,12 @@ typedef struct {
     uint32_t mtime;
     uint32_t link_count;
     uint32_t file_type;   /* fs_squashfs_file_type_t */
+    /* Block/char devices: the device number as stored, Linux
+     * new_encode_dev packing -- major = (rdev & 0xfff00) >> 8,
+     * minor = (rdev & 0xff) | ((rdev >> 12) & 0xfff00). 0 for every
+     * other type. Appended last, so earlier fields keep their offsets, but
+     * the struct grew: a compiled consumer must rebuild against this. */
+    uint32_t rdev;
 } fs_squashfs_attr_t;
 
 /* Directory entry (returned during iteration). */
