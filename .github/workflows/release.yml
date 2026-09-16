@@ -48,12 +48,17 @@ jobs:
       # binaries the #[ignore]-gated oracle / large-file / stress tests
       # shell out to. Same install as ci.yml so the release-time gate
       # exercises the same path as PR CI.
-      - name: install squashfs-tools
+      #
+      # `attr` too, as ci.yml installs it: tests/xattr_oracle.rs needs a way
+      # to set an extended attribute and FAILS when `CI` is set and none
+      # exists, so without it every tagged release would stop here.
+      - name: install squashfs-tools and attr
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq squashfs-tools
+          sudo apt-get install -y -qq squashfs-tools attr
           mksquashfs -version | head -1
           unsquashfs -version | head -1
+          setfattr --version | head -1
 
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets
