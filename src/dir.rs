@@ -19,7 +19,11 @@
 use crate::error::{Error, Result};
 
 /// SquashFS caps names at 256 bytes.
-const SQUASHFS_NAME_LEN: usize = 256;
+///
+/// `pub` because the C ABI's name buffer is sized from it: the two
+/// were separate `256`s, and one of them had to leave room for a NUL
+/// (#56).
+pub const SQUASHFS_NAME_LEN: usize = 256;
 
 /// A directory header describes at most this many entries.
 ///

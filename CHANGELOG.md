@@ -16,6 +16,13 @@ never does.
   **Breaking:** `fs_squashfs_attr_t` gains a trailing `uint32_t rdev`, so
   the struct is larger and C consumers must rebuild; `Inode` gains a
   public field, so code building one with a struct literal must add it.
+- **A 256-byte filename lists at full length through the C ABI.** The
+  format allows 256 bytes and the parser accepted them, but
+  `fs_squashfs_dirent_t` had `char name[256]` and a `uint8_t name_len`,
+  so the last byte went to the NUL: the listing showed a 255-byte name
+  that did not open. **Breaking ABI:** `name` is now `char name[257]` and
+  `name_len` is `uint16_t`, which moves `name`'s offset; C consumers must
+  rebuild against the new header.
 - **Extended attributes can be read.** Every extended inode carried an
   `xattr` index and every one of them threw it away, while the
   superblock's `xattr_id_table_start` was parsed and never used again —

@@ -58,8 +58,8 @@ typedef struct {
 typedef struct {
     uint32_t inode;
     uint8_t  file_type;   /* fs_squashfs_file_type_t */
-    uint8_t  name_len;
-    char     name[256];   /* null-terminated */
+    uint16_t name_len;    /* bytes before the NUL; up to 256 */
+    char     name[257];   /* null-terminated; SquashFS names are <= 256 bytes */
 } fs_squashfs_dirent_t;
 
 /* Volume information snapshotted from the superblock. */
