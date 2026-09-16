@@ -128,3 +128,60 @@ mod overflow_checks {
         );
     }
 }
+
+// THE README'S "CRATE LAYOUT" IS WHAT A NEW READER NAVIGATES BY.
+//
+// It listed an `lzo1x` module for several releases after the decoder
+// moved out to the `am-lzo1x` crate (#12), so the clean-room claim was
+// stated about code this crate no longer holds. A list written by hand
+// beside a list the compiler owns drifts silently; this compares the
+// two. See #51.
+#[cfg(test)]
+mod readme_layout {
+    use std::collections::BTreeSet;
+
+    /// The module names the README's `## Crate layout` section lists.
+    fn listed() -> BTreeSet<String> {
+        let readme = include_str!("../README.md");
+        let section = readme
+            .split("\n## Crate layout\n")
+            .nth(1)
+            .expect("README.md has no `## Crate layout` section");
+        let section = section.split("\n## ").next().unwrap_or(section);
+        section
+            .lines()
+            .filter_map(|l| l.strip_prefix("- `"))
+            .filter_map(|l| l.split('`').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The module names this file declares.
+    fn declared() -> BTreeSet<String> {
+        include_str!("lib.rs")
+            .lines()
+            .filter_map(|l| l.strip_prefix("pub mod "))
+            .filter_map(|l| l.strip_suffix(';'))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_readme_crate_layout_lists_exactly_the_declared_modules() {
+        let declared = declared();
+        // Control: a parser that found nothing would make both sets
+        // empty and agree.
+        assert!(
+            declared.contains("capi") && declared.contains("decompress"),
+            "could not read the module declarations out of lib.rs: {declared:?}"
+        );
+        let listed = listed();
+        let phantom: Vec<_> = listed.difference(&declared).collect();
+        let missing: Vec<_> = declared.difference(&listed).collect();
+        assert!(
+            phantom.is_empty() && missing.is_empty(),
+            "README.md's crate layout lists modules that do not exist: {phantom:?}; \
+             and omits modules that do: {missing:?}"
+        );
+    }
+}
