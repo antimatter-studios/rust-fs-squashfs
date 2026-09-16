@@ -737,7 +737,7 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
                 set_err_msg("readlink buffer too small", errno::ERANGE);
                 return -1;
             }
-            let dst = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, bufsize) };
+            let dst = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), bufsize) };
             dst[..target.len()].copy_from_slice(target);
             dst[target.len()] = 0;
             0
@@ -806,7 +806,7 @@ pub unsafe extern "C" fn fs_squashfs_listxattr(
             };
             let required: usize = entries.iter().map(|e| e.name.len() + 1).sum();
             if !buf.is_null() && bufsize > 0 {
-                let out = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, bufsize) };
+                let out = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), bufsize) };
                 let mut pos = 0usize;
                 for e in &entries {
                     let needed = e.name.len() + 1;
