@@ -527,3 +527,60 @@ fn read_matches_unsquashfs_extract() {
         "driver vs unsquashfs disagree on big.bin"
     );
 }
+
+fn last_err_string() -> String {
+    unsafe { std::ffi::CStr::from_ptr(fs_squashfs_last_error()) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `getxattr` decodes two strings, and a refusal names the one it
+/// refused.
+///
+/// Both arguments went through one decoder whose messages said "path",
+/// so an undecodable attribute *name* was reported as
+/// `path is not valid UTF-8` beside a path that was perfectly good. The
+/// errno was right and the noun sent the caller to the wrong argument.
+/// The path half is the control: it must still say "path". See #69.
+#[test]
+fn getxattr_names_the_argument_it_could_not_decode() {
+    let fs = mount_path();
+    let good = CString::new("/hello.txt").unwrap();
+    // "user.caf\xe9" -- the same latin-1 byte as `undecodable_path`.
+    let bad: Vec<std::ffi::c_char> = b"user.caf\xe9\0"
+        .iter()
+        .map(|&b| std::ffi::c_char::from_ne_bytes([b]))
+        .collect();
+
+    let rc =
+        unsafe { fs_squashfs_getxattr(fs, good.as_ptr(), bad.as_ptr(), std::ptr::null_mut(), 0) };
+    assert_eq!(rc, -1, "an undecodable xattr name was accepted");
+    assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    let msg = last_err_string();
+    assert!(
+        msg.starts_with("xattr name is not valid UTF-8"),
+        "the refusal did not name the xattr name argument: {msg}"
+    );
+
+    let bad_path: Vec<std::ffi::c_char> = b"/caf\xe9.txt\0"
+        .iter()
+        .map(|&b| std::ffi::c_char::from_ne_bytes([b]))
+        .collect();
+    let name = CString::new("user.x").unwrap();
+    let rc = unsafe {
+        fs_squashfs_getxattr(
+            fs,
+            bad_path.as_ptr(),
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    assert_eq!(rc, -1);
+    let msg = last_err_string();
+    assert!(
+        msg.starts_with("path is not valid UTF-8"),
+        "the path refusal stopped naming the path: {msg}"
+    );
+    unsafe { fs_squashfs_umount(fs) };
+}
