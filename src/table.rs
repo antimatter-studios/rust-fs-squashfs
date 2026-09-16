@@ -50,6 +50,18 @@ pub const NO_TABLE: u64 = u64::MAX;
 /// }
 /// ```
 ///
+/// and that failure is the deprecation, not a missing item: the same
+/// reference compiles once deprecation is allowed, so deleting or renaming
+/// the alias breaks this example rather than silently satisfying the one
+/// above (a `compile_fail` test passes for any compile error at all):
+///
+/// ```
+/// #[allow(deprecated)]
+/// fn the_alias_still_exists() -> u32 {
+///     fs_squashfs::table::DATA_COMPRESSED_BIT
+/// }
+/// ```
+///
 /// while the name that reads correctly is untouched (the control):
 ///
 /// ```
