@@ -54,13 +54,54 @@ enum Setter {
 }
 
 impl Setter {
+    /// The setter that works here, or `None` -- which every test turns
+    /// into a skip.
+    ///
+    /// A SKIP ON A LAPTOP AND A FAILURE IN CI, the rule
+    /// `common::tool_available` already applies to squashfs-tools. This
+    /// is a second gate on a different question: not "is `setfattr`
+    /// installed" but "does setting an attribute work in this TMPDIR".
+    /// A `user.*` attribute can fail on a filesystem that does not carry
+    /// them, a mount option, or a sandbox, and `setfattr --version` in
+    /// the workflow sees none of those. Without the assertion all nine
+    /// tests skip and the suite passes having compared nothing (#80).
+    ///
+    /// The tempdir and probe-file failures are on the same side of the
+    /// assertion: they also used to return `None` silently.
     fn detect() -> Option<Setter> {
-        let dir = tempfile::tempdir().ok()?;
-        let probe = dir.path().join("probe");
-        std::fs::write(&probe, b"x").ok()?;
-        [Setter::SetFattr, Setter::MacXattr]
-            .into_iter()
-            .find(|s| s.set(&probe, "user.probe", b"x").is_ok())
+        let mut failures: Vec<String> = Vec::new();
+        let chosen = match tempfile::tempdir() {
+            Err(e) => {
+                failures.push(format!("creating a tempdir: {e}"));
+                None
+            }
+            Ok(dir) => {
+                let probe = dir.path().join("probe");
+                match std::fs::write(&probe, b"x") {
+                    Err(e) => {
+                        failures.push(format!("writing {}: {e}", probe.display()));
+                        None
+                    }
+                    Ok(()) => [Setter::SetFattr, Setter::MacXattr].into_iter().find(|s| {
+                        match s.set(&probe, "user.probe", b"x") {
+                            Ok(()) => true,
+                            Err(e) => {
+                                failures.push(format!("{s:?}: {}", e.trim()));
+                                false
+                            }
+                        }
+                    }),
+                }
+            }
+        };
+        assert!(
+            chosen.is_some() || std::env::var_os("CI").is_none(),
+            "no way to set an extended attribute, and CI is set. ci.yml installs `attr` so \
+             the xattr oracles can run; without a working setter all nine tests would skip \
+             and the suite would pass having compared this driver against nothing. \
+             What failed: {failures:?}"
+        );
+        chosen
     }
 
     fn set(self, path: &Path, name: &str, value: &[u8]) -> Result<(), String> {
