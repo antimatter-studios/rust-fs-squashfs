@@ -3,7 +3,7 @@
 //! For each standard SquashFS compressor, build a fixture tree with the
 //! real `mksquashfs -comp <c>` and read every path back through the
 //! pure-Rust driver, asserting exact bytes. This is the ground truth that
-//! proves the codec dispatch (gzip / xz / lz4 / zstd / lzo) decodes real
+//! proves the codec dispatch (gzip / xz / lz4 / zstd / lzo / lzma) decodes real
 //! `mksquashfs` output, not just our own synthetic streams.
 //!
 //! Every test here is `#[ignore]`-gated so `cargo test` stays green on a
@@ -144,4 +144,15 @@ fn oracle_zstd() {
 #[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_lzo() {
     assert_reads_back("lzo");
+}
+
+/// Legacy lzma (id 2): `is_supported()` claims it and `mksquashfs -comp lzma`
+/// still writes it, but nothing read one back (#42). The in-kernel driver
+/// has no lzma, so `validate-kernel-mount` cannot cover it; the
+/// `unsquashfs` cross-check inside `assert_reads_back` is the external
+/// oracle here.
+#[test]
+#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
+fn oracle_lzma() {
+    assert_reads_back("lzma");
 }

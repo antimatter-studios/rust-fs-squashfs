@@ -170,14 +170,14 @@ EOF
 
 TARGETS=("$@")
 if [ ${#TARGETS[@]} -eq 0 ]; then
-    TARGETS=(basic gzip xz lz4 zstd lzo features)
+    TARGETS=(basic gzip xz lz4 zstd lzo lzma features)
 fi
 
 for t in "${TARGETS[@]}"; do
     case "$t" in
         basic)    build_basic ;;
         features) build_features ;;
-        gzip|xz|lz4|zstd|lzo) build_comp "$t" ;;
+        gzip|xz|lz4|zstd|lzo|lzma) build_comp "$t" ;;
         *) echo "unknown target: $t" >&2; exit 2 ;;
     esac
 done
