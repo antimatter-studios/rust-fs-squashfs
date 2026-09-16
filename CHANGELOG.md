@@ -8,6 +8,14 @@ never does.
 
 ### Added
 
+- **Device nodes keep their major and minor numbers.** The parser read
+  each block and character device's `rdev` and dropped it, so every
+  device in an image reported 0:0. `Inode::rdev` holds the raw value
+  (Linux `new_encode_dev` packing), with `rdev_major` / `rdev_minor` to
+  decode it; `lssquashfs ls` prints `major, minor` where `ls -l` does.
+  **Breaking:** `fs_squashfs_attr_t` gains a trailing `uint32_t rdev`, so
+  the struct is larger and C consumers must rebuild; `Inode` gains a
+  public field, so code building one with a struct literal must add it.
 - **Extended attributes can be read.** Every extended inode carried an
   `xattr` index and every one of them threw it away, while the
   superblock's `xattr_id_table_start` was parsed and never used again —
@@ -62,6 +70,19 @@ never does.
   `Inode::read` take the cache to consult (`None` for none), and
   `read_block` hands back a shared `Arc<Vec<u8>>` rather than a fresh
   `Vec`. Callers going through `Filesystem` are unaffected.
+
+### Fixed
+
+- **A superblock is checked against the image it describes.** Only the
+  magic, block size and major version were checked, so `bytes_used` = 1 TiB
+  over a 20 KiB file mounted and was published through
+  `fs_squashfs_get_volume_info`, and table starts past the end, inside the
+  superblock or out of order were accepted. `Filesystem::open` now refuses,
+  each with its own `BadSuperblock` reason: `bytes_used` beyond the device;
+  an unknown minor version (the kernel's rule); a table start outside
+  `[96, bytes_used)`; table starts out of the order `mksquashfs` writes them;
+  a root inode reference outside the inode table. A 3.x image is refused
+  as the wrong version rather than as a bad block size.
 
 ## [0.1.5] — 2026-09-06
 
