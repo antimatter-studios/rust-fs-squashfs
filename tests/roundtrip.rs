@@ -4,8 +4,12 @@
 //! large file, nested directories, and a symlink; squashes it; then reads
 //! it back through the pure-Rust driver and asserts every path matches.
 //!
-//! Skips (does not fail) when `mksquashfs` isn't on PATH, so the suite
-//! still runs on a host without squashfs-tools installed.
+//! Skips when `mksquashfs` isn't on PATH, so the suite still runs on a
+//! host without squashfs-tools installed -- but not in CI. The probe is
+//! `common::mksquashfs_available`, which fails when `CI` is set: this is
+//! the one oracle that is not `#[ignore]`-gated, and it used to carry a
+//! private probe that skipped there too, so a broken install step went
+//! green having compared the driver against nothing (#44).
 
 use std::path::Path;
 use std::process::Command;
@@ -14,13 +18,8 @@ use std::sync::Arc;
 use fs_core::{BlockRead, FileDevice};
 use fs_squashfs::Filesystem;
 
-fn have_mksquashfs() -> bool {
-    Command::new("mksquashfs")
-        .arg("-version")
-        .output()
-        .map(|o| o.status.success() || !o.stdout.is_empty())
-        .unwrap_or(false)
-}
+mod common;
+use common::mksquashfs_available;
 
 /// Deterministic pseudo-random bytes so the large file actually spans
 /// multiple compressed blocks (not a trivial run the codec collapses).
@@ -61,7 +60,7 @@ fn open(img: &Path) -> Filesystem {
 
 #[test]
 fn roundtrip_gzip_image() {
-    if !have_mksquashfs() {
+    if !mksquashfs_available() {
         eprintln!("skipping: mksquashfs not found on PATH");
         return;
     }
