@@ -271,6 +271,7 @@ mod tests {
     #[test]
     fn from_id_maps_known_codecs() {
         assert_eq!(Compressor::from_id(1).unwrap(), Compressor::Gzip);
+        assert_eq!(Compressor::from_id(2).unwrap(), Compressor::Lzma);
         assert_eq!(Compressor::from_id(3).unwrap(), Compressor::Lzo);
         assert_eq!(Compressor::from_id(4).unwrap(), Compressor::Xz);
         assert_eq!(Compressor::from_id(5).unwrap(), Compressor::Lz4);
