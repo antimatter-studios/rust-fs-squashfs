@@ -137,6 +137,107 @@ fn corrupt_root_inode_ref_is_handled_no_panic() {
 }
 
 // ===========================================================================
+// A superblock that lies about the image it describes (#48)
+// ===========================================================================
+//
+// Each case patches ONE field of the committed fixture, which mksquashfs
+// wrote, so every other field is one the reference tool produced. Offsets
+// are `struct squashfs_super_block`'s. The committed image's tables run
+// inode 0x4e9a < directory 0x4f10 < fragment 0x4f89 < export 0x4fb1 <
+// id 0x4fc3 < bytes_used 0x4fcb, inside a 20480-byte file.
+
+fn patch_u64(img: &mut [u8], at: usize, v: u64) {
+    img[at..at + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+fn rd_u64(img: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(img[at..at + 8].try_into().unwrap())
+}
+
+/// Open must refuse with `BadSuperblock` naming `needle`.
+fn assert_refused(img: Vec<u8>, needle: &str) {
+    match open_classify(img).expect("must not panic") {
+        Some(Error::BadSuperblock(why)) => assert!(
+            why.contains(needle),
+            "refused, but for {why:?} rather than for {needle:?}"
+        ),
+        Some(other) => panic!("expected BadSuperblock naming {needle:?}, got {other:?}"),
+        None => panic!("a superblock whose {needle} is a lie opened cleanly"),
+    }
+}
+
+/// `bytes_used` is published to the OS as the volume's size, so it
+/// cannot exceed the device it was read from.
+#[test]
+fn bytes_used_beyond_the_device_is_refused() {
+    let mut img = fixture_bytes();
+    patch_u64(&mut img, 0x28, 1 << 40);
+    assert_refused(img, "bytes_used");
+}
+
+/// The kernel refuses a minor version it does not know; so does this.
+#[test]
+fn an_unknown_minor_version_is_refused() {
+    let mut img = fixture_bytes();
+    img[0x1E..0x20].copy_from_slice(&1u16.to_le_bytes());
+    assert_refused(img, "minor");
+}
+
+/// A SquashFS 3.x image has `block_log` somewhere else, so it used to be
+/// refused as a bad block size rather than as the wrong major version.
+#[test]
+fn a_version_3_superblock_is_refused_as_version_3() {
+    let mut img = fixture_bytes();
+    img[0x1C..0x1E].copy_from_slice(&3u16.to_le_bytes());
+    img[0x16] = 99;
+    assert_refused(img, "4.x");
+}
+
+#[test]
+fn a_table_starting_past_bytes_used_is_refused() {
+    let mut img = fixture_bytes();
+    patch_u64(&mut img, 0x48, 1 << 40); // directory_table_start
+    assert_refused(img, "table");
+}
+
+#[test]
+fn a_table_starting_inside_the_superblock_is_refused() {
+    let mut img = fixture_bytes();
+    patch_u64(&mut img, 0x40, 10); // inode_table_start
+    assert_refused(img, "table");
+}
+
+/// In bounds individually, out of order together: the directory table
+/// before the inode table.
+#[test]
+fn tables_out_of_order_are_refused() {
+    let mut img = fixture_bytes();
+    let inode_start = rd_u64(&img, 0x40);
+    patch_u64(&mut img, 0x48, inode_start - 1); // directory_table_start
+    assert_refused(img, "order");
+}
+
+/// The root inode's block has to lie inside the inode table.
+#[test]
+fn a_root_inode_outside_the_inode_table_is_refused() {
+    let mut img = fixture_bytes();
+    let inode_start = rd_u64(&img, 0x40);
+    let dir_start = rd_u64(&img, 0x48);
+    let past = (dir_start - inode_start) << 16;
+    patch_u64(&mut img, 0x20, past); // root_inode_ref
+    assert_refused(img, "root");
+}
+
+/// The control for all of the above: the fixture as mksquashfs wrote it
+/// still opens, so none of them passes by refusing everything.
+#[test]
+fn the_unpatched_fixture_still_opens() {
+    assert!(open_classify(fixture_bytes())
+        .expect("must not panic")
+        .is_none());
+}
+
+// ===========================================================================
 // Oracle-built stress trees (require mksquashfs)
 // ===========================================================================
 
@@ -362,19 +463,15 @@ fn an_absurd_inode_table_start_errors_rather_than_overflowing() {
     let err = walk_root(img)
         .expect("must not panic")
         .expect_err("must not resolve a root inode from an offset nothing points at");
-    // The offset is the assertion, not the variant. Saturating puts the
-    // read at u64::MAX, which no device reaches; wrapping puts it at a
-    // small number that names real bytes, and the error you get back
-    // then describes whatever happened to be there.
+    // Since #48 the mount refuses this table start before any sum is
+    // taken, so the refusal is the assertion here. The sum itself --
+    // saturating to u64::MAX, which no device reaches, rather than
+    // wrapping to a small offset that names real bytes -- is still
+    // pinned by `metablock::tests::start_abs_saturates_rather_than_wrapping`,
+    // which this test can no longer reach through `open`.
     assert!(
-        matches!(
-            err,
-            Error::Block(fs_core::Error::ShortRead {
-                offset: u64::MAX,
-                ..
-            })
-        ),
-        "expected a short read at u64::MAX, got {err:?}"
+        matches!(err, Error::BadSuperblock(_)),
+        "expected the superblock to be refused, got {err:?}"
     );
 }
 
@@ -399,9 +496,12 @@ fn an_absurd_directory_table_start_errors_at_the_offset_it_names() {
     let err = walk_root(img)
         .expect("must not panic")
         .expect_err("must not read a directory listing from an offset nothing points at");
+    // Since #48 the mount refuses a directory table starting past
+    // `bytes_used` before `read_dir` can name any offset; the offset
+    // arithmetic is covered by the `MetadataRef::start_abs` unit tests.
     assert!(
-        matches!(err, Error::Block(fs_core::Error::ShortRead { offset, .. }) if offset == absurd),
-        "expected a short read at {absurd}, got {err:?}"
+        matches!(err, Error::BadSuperblock(_)),
+        "expected the superblock to be refused, got {err:?}"
     );
 }
 
@@ -466,4 +566,47 @@ fn an_id_index_past_the_table_is_refused_rather_than_answered_as_root() {
         Err(Error::BadInode(_)) => {}
         other => panic!("a gid index past the table gave {other:?}"),
     }
+}
+
+/// Every table layout `mksquashfs` writes still opens under the
+/// superblock checks (#48): optional tables absent in each combination,
+/// an empty root, and each compressor. The checks are only right if the
+/// reference writer's own output satisfies them.
+#[test]
+#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
+fn every_table_layout_mksquashfs_writes_passes_the_superblock_checks() {
+    if !mksquashfs_available() {
+        eprintln!("skipping: mksquashfs not on PATH");
+        return;
+    }
+    let full = dir(vec![
+        ("small.txt", file(b"tail\n")),
+        ("big.bin", file(&pattern(70_000))),
+        ("sub", dir(vec![("inner.txt", file(b"inner\n"))])),
+    ]);
+    let empty = dir(vec![]);
+    let layouts: &[&[&str]] = &[
+        &[],
+        &["-no-xattrs"],
+        &["-no-exports"],
+        &["-no-fragments"],
+        &["-no-exports", "-no-fragments", "-no-xattrs"],
+        &["-always-use-fragments"],
+    ];
+    let mut opened = 0;
+    for tree in [&full, &empty] {
+        for extra in layouts {
+            for comp in ["gzip", "xz", "lz4", "zstd", "lzo"] {
+                let art = build_with_mksquashfs_args(comp, tree, extra);
+                let dev: Arc<dyn fs_core::BlockRead> = Arc::new(MemDev::new(art.bytes));
+                let fs = Filesystem::open(dev).unwrap_or_else(|e| {
+                    panic!("mksquashfs -comp {comp} {extra:?} wrote an image this refuses: {e:?}")
+                });
+                fs.root_inode()
+                    .unwrap_or_else(|e| panic!("-comp {comp} {extra:?}: root inode: {e:?}"));
+                opened += 1;
+            }
+        }
+    }
+    assert_eq!(opened, 2 * layouts.len() * 5);
 }
