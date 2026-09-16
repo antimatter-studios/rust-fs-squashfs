@@ -17,18 +17,6 @@ use crate::metablock::{read_block, MetaCache};
 use crate::superblock::{Superblock, METADATA_SIZE};
 use fs_core::BlockRead;
 
-/// Data-block size word convention (shared by file block_sizes and
-/// fragment entries): bit 24 set → stored UNCOMPRESSED; low 24 bits → the
-/// on-disk size of the (possibly compressed) block.
-/// Set means the data block is stored UNCOMPRESSED.
-///
-/// Named for what it is about rather than what it means, which reads
-/// backwards at every use: `raw & DATA_COMPRESSED_BIT == 0` is the test
-/// for "this block IS compressed". The polarity is the format's.
-///
-/// [`DATA_UNCOMPRESSED_BIT`] is the same value under a name that reads
-/// correctly. This one is kept because it is `pub` and published; prefer
-/// the new name in new code.
 /// The value an optional table's start carries when the table is absent.
 ///
 /// `mksquashfs -no-exports` and `-no-xattrs` both write it, and so does
@@ -36,10 +24,49 @@ use fs_core::BlockRead;
 /// module about tables, rather than one per table that can be missing.
 pub const NO_TABLE: u64 = u64::MAX;
 
+/// Data-block size word convention (shared by file block_sizes and
+/// fragment entries): bit 24 set → stored UNCOMPRESSED; low 24 bits → the
+/// on-disk size of the (possibly compressed) block.
+///
+/// Set means the data block is stored UNCOMPRESSED.
+///
+/// Named for what it is about rather than what it means, which reads
+/// backwards at every use: `raw & DATA_COMPRESSED_BIT == 0` is the test
+/// for "this block IS compressed". The polarity is the format's.
+///
+/// [`DATA_UNCOMPRESSED_BIT`] is the same value under a name that reads
+/// correctly. This one is kept, with the same value, because it is `pub`
+/// and published, and it is deprecated so the compiler says so at the use
+/// site: this explanation had already come detached once, onto
+/// [`NO_TABLE`], which is the case against relying on a doc comment
+/// (#50). A `0.x` minor bump is where it can go.
+///
+/// A build that refuses deprecated items cannot name this constant:
+///
+/// ```compile_fail
+/// #[deny(deprecated)]
+/// fn uses_the_backwards_name() -> u32 {
+///     fs_squashfs::table::DATA_COMPRESSED_BIT
+/// }
+/// ```
+///
+/// while the name that reads correctly is untouched (the control):
+///
+/// ```
+/// #[deny(deprecated)]
+/// fn uses_the_right_name() -> u32 {
+///     fs_squashfs::table::DATA_UNCOMPRESSED_BIT
+/// }
+/// assert_eq!(uses_the_right_name(), 1 << 24);
+/// ```
+#[deprecated(
+    since = "0.1.6",
+    note = "the bit means the block is UNCOMPRESSED; use DATA_UNCOMPRESSED_BIT"
+)]
 pub const DATA_COMPRESSED_BIT: u32 = 1 << 24;
 
-/// Set means the data block is stored uncompressed. Same bit as
-/// [`DATA_COMPRESSED_BIT`], named for what it means.
+/// Set means the data block is stored uncompressed. Same bit as the
+/// deprecated `DATA_COMPRESSED_BIT`, named for what it means.
 pub const DATA_UNCOMPRESSED_BIT: u32 = 1 << 24;
 pub const DATA_SIZE_MASK: u32 = (1 << 24) - 1;
 
@@ -308,7 +335,7 @@ mod tests {
         assert_eq!(data_on_disk_size(1234), 1234);
         assert!(data_is_compressed(1234));
         // Uncompressed 4096-byte block: bit 24 set.
-        let raw = 4096 | DATA_COMPRESSED_BIT;
+        let raw = 4096 | DATA_UNCOMPRESSED_BIT;
         assert_eq!(data_on_disk_size(raw), 4096);
         assert!(!data_is_compressed(raw));
         // Sparse block: size word 0.
