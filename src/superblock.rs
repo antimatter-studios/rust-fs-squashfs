@@ -204,6 +204,28 @@ impl Superblock {
         Ok(())
     }
 
+    /// Where the directory table ends, as far as the superblock can say.
+    ///
+    /// The tables after it (fragment, export, id, xattr) each start with
+    /// their own metadata blocks and then the index array their `_start`
+    /// names, so the nearest of those starts -- or `bytes_used` -- is an
+    /// upper bound on the directory table's last byte. `u64::MAX` when
+    /// nothing after it is known (a superblock that names no later table
+    /// and no size), which leaves the old behaviour in place.
+    pub fn directory_table_end(&self) -> u64 {
+        [
+            self.fragment_table_start,
+            self.export_table_start,
+            self.id_table_start,
+            self.xattr_id_table_start,
+            self.bytes_used,
+        ]
+        .into_iter()
+        .filter(|&t| t != crate::table::NO_TABLE && t > self.directory_table_start)
+        .min()
+        .unwrap_or(u64::MAX)
+    }
+
     /// Resolve the archive-wide compressor. Returns
     /// [`Error::UnsupportedCompression`] for ids we don't recognise.
     pub fn compressor(&self) -> Result<Compressor> {

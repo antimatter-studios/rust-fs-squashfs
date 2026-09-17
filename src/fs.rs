@@ -149,6 +149,39 @@ impl LogicalBlock {
     }
 }
 
+/// Where the directory table ends.
+///
+/// The superblock names where each later table's INDEX starts, but a
+/// table's metadata blocks are stored before its index, so the nearest
+/// `_start` is past those blocks and a listing bounded by it still read
+/// through them. Each index (and the xattr id table's header) starts
+/// with a `u64` naming its table's first metadata block, which is where
+/// that table really begins; the nearest of those, and of the superblock
+/// bound, is the end. A pointer that cannot be read, or that is not past
+/// the directory table's start, is not used.
+fn directory_table_end<R: BlockRead + ?Sized>(dev: &R, sb: &Superblock) -> u64 {
+    let tables = [
+        (sb.fragment_table_start, sb.fragment_entry_count > 0),
+        (sb.export_table_start, true),
+        (sb.id_table_start, sb.id_count > 0),
+        (sb.xattr_id_table_start, true),
+    ];
+    let mut end = sb.directory_table_end();
+    for (start, has_blocks) in tables {
+        if start == table::NO_TABLE || !has_blocks {
+            continue;
+        }
+        let mut first = [0u8; 8];
+        if dev.read_at(start, &mut first).is_ok() {
+            let first = u64::from_le_bytes(first);
+            if first > sb.directory_table_start {
+                end = end.min(first);
+            }
+        }
+    }
+    end
+}
+
 pub struct Filesystem {
     dev: Arc<dyn BlockRead>,
     pub sb: Superblock,
@@ -171,6 +204,9 @@ pub struct Filesystem {
     /// for the same bytes; this stops the codec being run twice over
     /// them. Both are needed, and this is the one that moves the clock:
     /// see `docs/read-path-cost.md`.
+    /// Where the directory table ends: see [`directory_table_end`].
+    /// Worked out once, at open.
+    dir_table_end: u64,
     meta_cache: MetaCache,
     /// Decompressed data and fragment blocks; see
     /// [`DEFAULT_DATA_CACHE_BLOCKS`].
@@ -249,7 +285,9 @@ impl Filesystem {
         let fragments = table::read_fragment_table(&*dev, &sb)?;
         let xattr_ids = xattr::read_id_table(&*dev, &sb)?;
         let exports = table::read_export_table(&*dev, &sb)?;
+        let dir_table_end = directory_table_end(&*dev, &sb);
         Ok(Filesystem {
+            dir_table_end,
             dev,
             sb,
             comp,
@@ -398,14 +436,17 @@ impl Filesystem {
         if !inode.is_dir() {
             return Err(Error::NotADirectory);
         }
-        // NOT BOUNDED AGAINST THE IMAGE, deliberately. A listing lives
-        // in compressed metadata blocks, so its decompressed length
-        // routinely exceeds the whole image: `mksquashfs` on a
-        // directory of two thousand files produced a 41049-byte listing
-        // inside a 20480-byte image. What bounds the memory here is
-        // that `MetaCursor` grows its buffer one 8 KiB metablock at a
-        // time and stops when a device read runs off the end, so the
-        // cost is bounded by the metadata the image really holds.
+        // NOT BOUNDED BY ITS LENGTH AGAINST THE IMAGE, deliberately. A
+        // listing lives in compressed metadata blocks, so its
+        // decompressed length routinely exceeds the whole image:
+        // `mksquashfs` on a directory of two thousand files produced a
+        // 41049-byte listing inside a 20480-byte image.
+        //
+        // BOUNDED BY THE DIRECTORY TABLE instead: the cursor refuses to
+        // pull a block that starts past the table's end. The device
+        // running out was the only stop before, after every metadata
+        // block of every later table had been decompressed onto the
+        // buffer -- 248:1 for zeros (#45).
         let listing_len = inode.dir_listing_len();
         if listing_len == 0 {
             return Ok(Vec::new());
@@ -430,7 +471,11 @@ impl Filesystem {
             start_abs,
             inode.dir_block_offset,
             Some(&self.meta_cache),
-        )?;
+        )?
+        .with_limit(
+            self.dir_table_end,
+            "directory listing runs past the end of the directory table",
+        );
         let buf = cur.read_exact(listing_len)?;
         dir::parse_listing(&buf)
     }
@@ -763,6 +808,7 @@ mod tests {
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
             data_cache: DataCache::new(DEFAULT_DATA_CACHE_BLOCKS),
+            dir_table_end: u64::MAX,
         }
     }
 
@@ -783,6 +829,7 @@ mod tests {
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
             data_cache: DataCache::new(DEFAULT_DATA_CACHE_BLOCKS),
+            dir_table_end: u64::MAX,
         }
     }
 
@@ -893,6 +940,92 @@ mod tests {
             "a listing longer than the image was refused on its declared length: {why}"
         );
         assert!(why != "None", "a 4 GiB listing in a 64 KiB image succeeded");
+    }
+
+    /// A listing that declares more bytes than its directory table holds
+    /// stops at the end of the table, by name (#45).
+    ///
+    /// Metadata compresses 248:1 when it is all zeros (8 KiB in a 33-byte
+    /// block), so "bounded by the metadata the image holds" was not a
+    /// small bound: the cursor kept pulling blocks past the directory
+    /// table -- through whatever tables followed -- until a device read
+    /// failed. Here the directory table is ONE block, followed by 2000
+    /// more valid zero blocks standing in for the tables after it, so the
+    /// device running out is two thousand decompressions away and cannot
+    /// be what stops the read.
+    #[test]
+    fn a_listing_longer_than_its_directory_table_stops_at_the_table_end() {
+        let zero_block = {
+            let z = zlib(&[0u8; crate::superblock::METADATA_SIZE]);
+            let mut b = (z.len() as u16).to_le_bytes().to_vec();
+            b.extend_from_slice(&z);
+            b
+        };
+        // Laid out as mksquashfs lays it out: the fragment table's
+        // metadata blocks come straight after the directory table, and
+        // its index -- where `fragment_table_start` points -- after them.
+        // So the superblock's nearest `_start` is two thousand blocks
+        // past the directory table's real end.
+        let dir_start = 4096u64;
+        let mut img = vec![0u8; dir_start as usize];
+        img.extend_from_slice(&zero_block); // the directory table
+        let fragment_blocks = img.len() as u64;
+        for _ in 0..2000 {
+            img.extend_from_slice(&zero_block);
+        }
+        let fragment_index = img.len() as u64;
+        img.extend_from_slice(&fragment_blocks.to_le_bytes());
+        let id_index = img.len() as u64;
+        img.extend_from_slice(&fragment_blocks.to_le_bytes());
+        let mut sb_bytes = synth_sb(BLOCK_LOG, 0, 96);
+        sb_bytes[0x10..0x14].copy_from_slice(&1u32.to_le_bytes()); // fragment_entry_count
+        sb_bytes[0x28..0x30].copy_from_slice(&(img.len() as u64).to_le_bytes()); // bytes_used
+        sb_bytes[0x48..0x50].copy_from_slice(&dir_start.to_le_bytes());
+        sb_bytes[0x50..0x58].copy_from_slice(&fragment_index.to_le_bytes()); // fragment_table_start
+        sb_bytes[0x30..0x38].copy_from_slice(&id_index.to_le_bytes()); // id_table_start
+        for at in [0x38, 0x58] {
+            sb_bytes[at..at + 8].copy_from_slice(&crate::table::NO_TABLE.to_le_bytes());
+        }
+        let sb = Superblock::parse(&sb_bytes).unwrap();
+        let dev = MemDev(Mutex::new(img));
+        let dir_table_end = directory_table_end(&dev, &sb);
+        assert_eq!(
+            dir_table_end, fragment_blocks,
+            "the end is where the fragment table's blocks begin"
+        );
+        let fs = Filesystem {
+            dir_table_end,
+            dev: Arc::new(dev),
+            sb,
+            comp: Compressor::Gzip,
+            id_table: Vec::new(),
+            fragments: Vec::new(),
+            xattr_ids: None,
+            exports: None,
+            meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            data_cache: DataCache::new(DEFAULT_DATA_CACHE_BLOCKS),
+        };
+
+        let mut dir = file_inode(0, Vec::new());
+        dir.inode_type = crate::inode::TYPE_EXT_DIR;
+        dir.file_size = u64::from(u32::MAX);
+
+        let got = fs.read_dir(&dir);
+        let (_, _, _, decompressed) = fs.meta_cache_stats();
+        match got {
+            Err(Error::BadMetadata(why)) => assert!(
+                why.contains("past the end of the directory table"),
+                "refused, but not by name: {why}"
+            ),
+            other => panic!(
+                "expected the listing to stop at the directory table's end, got {other:?} \
+                 after {decompressed} metadata blocks were decompressed"
+            ),
+        }
+        assert!(
+            decompressed <= 2,
+            "{decompressed} metadata blocks were decompressed for a one-block table"
+        );
     }
 
     /// A data block whose declared on-disk size is bigger than the
