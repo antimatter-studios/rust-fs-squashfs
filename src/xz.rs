@@ -113,6 +113,9 @@ fn decompress_with(stream: &[u8], max_out: usize, run_filter: bool) -> Result<Ve
     };
 
     let mut out = Vec::new();
+    // (unpadded size, uncompressed size) of each block, which the index
+    // must repeat.
+    let mut records: Vec<(u64, u64)> = Vec::new();
     let mut pos = 12usize;
     loop {
         let size_byte = *stream
@@ -120,6 +123,7 @@ fn decompress_with(stream: &[u8], max_out: usize, run_filter: bool) -> Result<Ve
             .ok_or(bad("xz: stream ends before its index"))?;
         if size_byte == 0 {
             // The index: every block has been read.
+            check_index_and_footer(&stream[pos..], &records, flags)?;
             return Ok(out);
         }
         let block_start = pos;
@@ -151,14 +155,22 @@ fn decompress_with(stream: &[u8], max_out: usize, run_filter: bool) -> Result<Ve
         let mut bcj: Option<(Bcj, u32)> = None;
         for index in 0..filters {
             let id = varint(body, &mut at)?;
-            let props_len = varint(body, &mut at)? as usize;
-            let props = body
-                .get(at..at + props_len)
+            let props_end = usize::try_from(varint(body, &mut at)?)
+                .ok()
+                .and_then(|len| at.checked_add(len))
                 .ok_or(bad("xz: filter properties run off the block header"))?;
-            at += props_len;
+            let props = body
+                .get(at..props_end)
+                .ok_or(bad("xz: filter properties run off the block header"))?;
+            at = props_end;
             let last = index + 1 == filters;
             match (last, id) {
-                (true, FILTER_LZMA2) => {}
+                // One byte, the dictionary size code, which stops at 40
+                // (4 GiB - 1).
+                (true, FILTER_LZMA2) => match props {
+                    [code] if *code <= 40 => {}
+                    _ => return Err(bad("xz: LZMA2 properties are not one byte of at most 40")),
+                },
                 (true, _) => return Err(bad("xz: the chain does not end in LZMA2")),
                 (false, FILTER_LZMA2) => return Err(bad("xz: LZMA2 before the end of the chain")),
                 (false, _) if bcj.is_some() => {
@@ -219,6 +231,10 @@ fn decompress_with(stream: &[u8], max_out: usize, run_filter: bool) -> Result<Ve
         let stored_check = stream
             .get(end..end + check_len)
             .ok_or(bad("xz: block check runs off the stream"))?;
+        records.push((
+            (header_len + consumed + check_len) as u64,
+            block.len() as u64,
+        ));
         if let Some((kind, start)) = bcj {
             if !run_filter {
                 out.extend_from_slice(&block);
@@ -240,6 +256,64 @@ fn decompress_with(stream: &[u8], max_out: usize, run_filter: bool) -> Result<Ve
         out.extend_from_slice(&block);
         pos = end + check_len;
     }
+}
+
+/// The index that follows the last block and the stream footer after it.
+///
+/// Without these a stream whose blocks decode is accepted even when the
+/// container around them is damaged, which `lzma_rs::xz_decompress` (the
+/// plain path) does not allow either. `tail` starts at the index
+/// indicator; `records` are the blocks as decoded; `header_flags` are the
+/// stream header's, which the footer must repeat. Stream padding (zero
+/// bytes in fours) may follow the footer, and nothing else.
+fn check_index_and_footer(tail: &[u8], records: &[(u64, u64)], header_flags: &[u8]) -> Result<()> {
+    let bad = Error::BadMetadata;
+    let mut at = 1usize;
+    let count = varint(tail, &mut at)?;
+    if count != records.len() as u64 {
+        return Err(bad("xz: index record count disagrees with the blocks"));
+    }
+    for &(unpadded, uncompressed) in records {
+        if varint(tail, &mut at)? != unpadded || varint(tail, &mut at)? != uncompressed {
+            return Err(bad("xz: index record disagrees with its block"));
+        }
+    }
+    while !at.is_multiple_of(4) {
+        if tail.get(at) != Some(&0) {
+            return Err(bad("xz: index padding is not zero"));
+        }
+        at += 1;
+    }
+    let stored = tail
+        .get(at..at + 4)
+        .ok_or(bad("xz: index CRC32 runs off the stream"))?;
+    if crc32(&tail[..at]).to_le_bytes() != stored {
+        return Err(bad("xz: index CRC32 mismatch"));
+    }
+    let index_len = at + 4;
+    let footer = tail
+        .get(index_len..index_len + 12)
+        .ok_or(bad("xz: stream ends before its footer"))?;
+    if footer[10..] != *b"YZ" {
+        return Err(bad("xz: stream footer magic is wrong"));
+    }
+    if crc32(&footer[4..10]).to_le_bytes() != footer[..4] {
+        return Err(bad("xz: stream footer is damaged"));
+    }
+    if footer[8..10] != *header_flags {
+        return Err(bad("xz: stream footer flags disagree with the header"));
+    }
+    let backward = u64::from(u32::from_le_bytes(footer[4..8].try_into().unwrap()));
+    if (backward + 1) * 4 != index_len as u64 {
+        return Err(bad(
+            "xz: stream footer's backward size disagrees with the index",
+        ));
+    }
+    let padding = &tail[index_len + 12..];
+    if !padding.len().is_multiple_of(4) || padding.iter().any(|&b| b != 0) {
+        return Err(bad("xz: bytes after the stream footer"));
+    }
+    Ok(())
 }
 
 /// A sink that refuses to grow past `limit`, as `decompress.rs`'s own.
@@ -564,6 +638,102 @@ mod tests {
             decompress(&damaged, 1 << 20).is_err(),
             "a damaged stream was accepted"
         );
+    }
+
+    /// `stream` with `edit` applied to its first block header, whose CRC32
+    /// is then recomputed, so only the edit is wrong.
+    fn with_block_header(stream: &[u8], edit: impl Fn(&mut [u8])) -> Vec<u8> {
+        let mut out = stream.to_vec();
+        let len = (usize::from(out[12]) + 1) * 4;
+        edit(&mut out[12..12 + len - 4]);
+        let crc = crc32(&out[12..12 + len - 4]);
+        out[12 + len - 4..12 + len].copy_from_slice(&crc.to_le_bytes());
+        out
+    }
+
+    /// The fixtures' block header: `02 01`, x86 with no properties
+    /// (`04 00`), LZMA2 with one (`21 01 16`), one padding byte.
+    const LZMA2_PROPS_LEN: usize = 5;
+    const LZMA2_PROPS: usize = 6;
+
+    #[test]
+    fn lzma2_properties_must_be_one_byte_of_at_most_40() {
+        let (_, stream, plain) = FIXTURES[0];
+        let fixed = with_block_header(stream, |_| {});
+        assert_eq!(decompress(&fixed, 1 << 20).unwrap(), plain, "control");
+        let too_big = with_block_header(stream, |h| h[LZMA2_PROPS] = 41);
+        assert!(
+            decompress(&too_big, 1 << 20).is_err(),
+            "a code of 41 was accepted"
+        );
+        let two = with_block_header(stream, |h| h[LZMA2_PROPS_LEN] = 2);
+        assert!(
+            decompress(&two, 1 << 20).is_err(),
+            "two property bytes were accepted"
+        );
+        let none = with_block_header(stream, |h| {
+            h[LZMA2_PROPS_LEN] = 0;
+            h[LZMA2_PROPS] = 0;
+        });
+        assert!(
+            decompress(&none, 1 << 20).is_err(),
+            "no property byte was accepted"
+        );
+    }
+
+    /// A properties length no header could hold is refused, not added to
+    /// the header offset (which overflows on a 32-bit target).
+    #[test]
+    fn a_huge_properties_length_is_refused() {
+        let (_, stream, _) = FIXTURES[0];
+        // A nine-byte varint does not fit the fixture's header; a two-byte
+        // length of 16383 is as far past it.
+        let long = with_block_header(stream, |h| {
+            h[LZMA2_PROPS_LEN] = 0xFF;
+            h[LZMA2_PROPS] = 0x7F;
+        });
+        assert!(decompress(&long, 1 << 20).is_err());
+    }
+
+    /// Every byte of the index and the footer is checked: flipping any one
+    /// of them refuses the stream, and so does cutting the footer off or
+    /// appending a byte.
+    #[test]
+    fn a_damaged_index_or_footer_is_refused() {
+        for (name, stream, plain) in FIXTURES {
+            assert_eq!(decompress(stream, 1 << 20).expect(name), plain, "{name}");
+            let index = stream.len() - 12 - index_len(stream);
+            for at in index..stream.len() {
+                let mut damaged = stream.to_vec();
+                damaged[at] ^= 0x01;
+                assert!(
+                    decompress(&damaged, 1 << 20).is_err(),
+                    "{name}: a flipped bit at {at} (index at {index}) was accepted"
+                );
+            }
+            assert!(
+                decompress(&stream[..stream.len() - 12], 1 << 20).is_err(),
+                "{name}: no footer"
+            );
+            let mut longer = stream.to_vec();
+            longer.push(0);
+            assert!(
+                decompress(&longer, 1 << 20).is_err(),
+                "{name}: a trailing byte"
+            );
+            longer.extend_from_slice(&[0, 0, 0]);
+            assert_eq!(
+                decompress(&longer, 1 << 20).expect(name),
+                plain,
+                "{name}: stream padding"
+            );
+        }
+    }
+
+    /// The index's size, from the footer's backward size.
+    fn index_len(stream: &[u8]) -> usize {
+        let n = stream.len();
+        (u32::from_le_bytes(stream[n - 8..n - 4].try_into().unwrap()) as usize + 1) * 4
     }
 
     /// The output ceiling holds for a filtered stream as for a plain one.
