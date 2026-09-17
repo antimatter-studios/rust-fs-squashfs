@@ -113,7 +113,10 @@ fn runs_with_overflow_checks(script: &str) -> Vec<String> {
             if !command.contains("cargo test") {
                 return None;
             }
-            if command.contains("--release") || command.contains("--profile") {
+            if command.contains("--release")
+                || command.contains("--profile")
+                || selects_release_by_short_flag(command)
+            {
                 return None;
             }
             if command.contains("CARGO_PROFILE_") {
@@ -122,6 +125,125 @@ fn runs_with_overflow_checks(script: &str) -> Vec<String> {
             Some(command.to_string())
         })
         .collect()
+}
+
+/// Whether `command` runs `cargo test` with the release profile selected
+/// by its short flag (#77).
+///
+/// `cargo test -r` is `cargo test --release`, and the string check above
+/// does not see it. Nor is it one spelling: clap merges short flags, so
+/// `-qr` and `-rq` carry it as well, anywhere before `--`. A cluster ends
+/// at a short option that takes a value -- `-p`, `-j`, `-F` or `-Z` --
+/// whose value is the rest of the word or, when the word ends there, the
+/// next one: `-j4 -r` is release, `-pr` names a package `r`. Everything
+/// after `--` belongs to the test harness, where `-r` is not cargo's.
+fn selects_release_by_short_flag(command: &str) -> bool {
+    let words = shell_words(command);
+    let mut at = 0;
+    while at < words.len() {
+        // `cargo` by name or by path, then any `+toolchain`, then `test`.
+        let is_cargo = words[at] == "cargo" || words[at].ends_with("/cargo");
+        let mut next = at + 1;
+        while is_cargo && words.get(next).is_some_and(|w| w.starts_with('+')) {
+            next += 1;
+        }
+        if is_cargo && words.get(next) == Some(&"test") && release_in(&words[next + 1..]) {
+            return true;
+        }
+        at += 1;
+    }
+    false
+}
+
+/// `command` split into words, with the shell's control operators -- `&&`,
+/// `||`, `;`, `|` and `&` -- as words of their own whether or not spaces
+/// surround them: `true&&cargo test -r` is a `cargo test` run, and in
+/// `cargo test --lib&&rm -rf build` the `-rf` is `rm`'s. An `&` or `|`
+/// straight after `>` or `<` is part of a redirection (`2>&1`, `>|`).
+fn shell_words(command: &str) -> Vec<&str> {
+    let bytes = command.as_bytes();
+    let mut words = Vec::new();
+    let mut word_start = None;
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        let operator_len = match byte {
+            b';' => 1,
+            b'&' | b'|' if at > 0 && matches!(bytes[at - 1], b'>' | b'<') => 0,
+            b'&' | b'|' if bytes.get(at + 1) == Some(&byte) => 2,
+            b'&' | b'|' => 1,
+            _ => 0,
+        };
+        if operator_len == 0 && !byte.is_ascii_whitespace() {
+            word_start.get_or_insert(at);
+            at += 1;
+            continue;
+        }
+        if let Some(start) = word_start.take() {
+            words.push(&command[start..at]);
+        }
+        if operator_len > 0 {
+            words.push(&command[at..at + operator_len]);
+        }
+        at += operator_len.max(1);
+    }
+    if let Some(start) = word_start {
+        words.push(&command[start..]);
+    }
+    words
+}
+
+/// Whether `cargo test`'s `arguments`, up to the end of its own command,
+/// carry `-r`. See [`selects_release_by_short_flag`].
+///
+/// A shell separator ends the command: `cargo test --lib && rm -rf build`
+/// is a debug run, and the `r` in `-rf` belongs to `rm`.
+fn release_in(arguments: &[&str]) -> bool {
+    const LONG_OPTIONS_TAKING_A_VALUE: [&str; 15] = [
+        "--package",
+        "--exclude",
+        "--features",
+        "--target",
+        "--target-dir",
+        "--manifest-path",
+        "--profile",
+        "--test",
+        "--bin",
+        "--example",
+        "--bench",
+        "--jobs",
+        "--message-format",
+        "--color",
+        "--config",
+    ];
+    let mut next_is_a_value = false;
+    for &argument in arguments {
+        if matches!(argument, "&&" | "||" | ";" | "|" | "&") {
+            return false;
+        }
+        if std::mem::take(&mut next_is_a_value) {
+            continue;
+        }
+        if argument == "--" {
+            return false;
+        }
+        if argument.starts_with("--") {
+            next_is_a_value =
+                !argument.contains('=') && LONG_OPTIONS_TAKING_A_VALUE.contains(&argument);
+        } else if let Some(cluster) = argument.strip_prefix('-') {
+            for (at, flag) in cluster.char_indices() {
+                match flag {
+                    'r' => return true,
+                    'p' | 'j' | 'F' | 'Z' => {
+                        next_is_a_value = at + 1 == cluster.len();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    false
 }
 
 /// WHAT ELSE DECIDES WHETHER A STEP GATES.
@@ -781,6 +903,49 @@ EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib
             vec!["cargo test --locked --lib".to_string()],
             "the command is a debug run; --release appears only in its comment"
         );
+    }
+
+    /// `-r` IS `--release`, IN EVERY SPELLING CLAP ACCEPTS (#77). Each of
+    /// these compiles with overflow checks off and counted as the debug
+    /// run; the controls beside them are not release and still count.
+    #[test]
+    fn the_short_release_flag_does_not_count_in_any_spelling() {
+        for line in [
+            "cargo test --locked -r --all-targets",
+            "cargo test --locked -qr --all-targets",
+            "cargo test --locked -rq --all-targets",
+            "cargo test --locked -j4 -r",
+            "cargo test --locked -j 4 -r --lib",
+            "cargo test --locked --features x -r",
+            "/usr/bin/cargo test --locked -r --lib",
+            "cargo +1.95.0 test --locked -r --lib",
+            "true&&cargo test --locked -r --lib",
+            "cargo test --locked --lib 2>&1 -r",
+        ] {
+            assert_eq!(
+                runs_with_overflow_checks(line),
+                Vec::<String>::new(),
+                "{line} builds the release profile"
+            );
+        }
+        for line in [
+            "cargo test --locked --all-targets -- -r",
+            "cargo test --locked --features r",
+            "cargo test --locked -F r",
+            "cargo test --locked -pr --lib",
+            "cargo test --locked -j r --lib",
+            "cargo test --locked --lib && rm -rf build",
+            "cargo test --locked --lib; echo -r",
+            "cargo test --locked --lib&&rm -rf build",
+            "cargo test --locked --lib;echo -r",
+            "cargo test --locked --lib|tee -r",
+        ] {
+            assert_eq!(
+                runs_with_overflow_checks(line).len(),
+                1,
+                "{line}: the r is a value or the harness's, and the run is debug"
+            );
+        }
     }
 
     /// The ways a run can carry no `--release` and still be built
