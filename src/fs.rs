@@ -290,7 +290,10 @@ impl Filesystem {
 
     /// `(entries, capacity, hits, misses)` for the decompressed
     /// data/fragment cache. A miss is one data block put through the codec
-    /// (or read raw, when stored uncompressed).
+    /// (or read raw, when stored uncompressed) while the cache is on. A
+    /// cache switched off (capacity zero) counts nothing, as the metadata
+    /// cache does: it is not being asked, so a 0% hit rate over its reads
+    /// would describe nothing.
     pub fn data_cache_stats(&self) -> (usize, usize, u64, u64) {
         self.data_cache.stats()
     }
@@ -668,6 +671,14 @@ impl Filesystem {
     /// Held in `data_cache` once decoded, so a block read in chunks, or a
     /// fragment block shared by many small files, is decoded once rather
     /// than once per call (#47). Failures are not cached.
+    ///
+    /// Once per block for readers taking turns, not for readers racing:
+    /// the lookup and the insert take the lock separately, with the decode
+    /// between them, so two threads that miss the same block at the same
+    /// moment each decode it, each count a miss, and the second insert
+    /// replaces the first with identical bytes. That is deliberate. Holding
+    /// the lock across a decode would put every read of every file behind
+    /// the slowest block being decoded.
     fn read_data_block(
         &self,
         abs_off: u64,
@@ -959,6 +970,29 @@ mod tests {
                 panic!("the cached 4096-byte block was served for a 100-byte size word: {other:?}")
             }
         }
+    }
+
+    /// A data cache switched off still reads, and counts neither hits nor
+    /// misses; switched on, the same two reads are one miss and one hit.
+    #[test]
+    fn a_disabled_data_cache_reads_and_counts_nothing() {
+        let full = BLOCK_SIZE as u32 | crate::table::DATA_UNCOMPRESSED_BIT;
+        let inode = file_inode(BLOCK_SIZE as u64, vec![full]);
+        let mut buf = vec![0u8; BLOCK_SIZE];
+
+        let fs = fs_over(vec![0xABu8; BLOCK_SIZE]).with_data_cache_capacity(0);
+        for _ in 0..2 {
+            assert_eq!(fs.read_file(&inode, 0, &mut buf).unwrap(), BLOCK_SIZE);
+            assert!(buf.iter().all(|&b| b == 0xAB));
+        }
+        assert_eq!(fs.data_cache_stats(), (0, 0, 0, 0));
+
+        fs.set_data_cache_capacity(DEFAULT_DATA_CACHE_BLOCKS);
+        for _ in 0..2 {
+            fs.read_file(&inode, 0, &mut buf).unwrap();
+        }
+        let (entries, _, hits, misses) = fs.data_cache_stats();
+        assert_eq!((entries, hits, misses), (1, 1, 1));
     }
 
     #[test]
