@@ -70,26 +70,6 @@ pub struct Filesystem {
     /// them. Both are needed, and this is the one that moves the clock:
     /// see `docs/read-path-cost.md`.
     meta_cache: MetaCache,
-    /// The block map of the file read last (#46). See [`BlockMap`].
-    last_block_map: std::sync::Mutex<Option<BlockMap>>,
-}
-
-/// One file's absolute on-disk block offsets, kept between reads.
-///
-/// `read_file` used to rebuild this -- a prefix sum over every block
-/// size, and a `Vec` to hold it -- on every call, and a caller reading a
-/// file in chunks calls once per chunk: 8192 chunks of an 8192-block file
-/// was 67 million additions. The archive is read-only, so a map built
-/// once is right for as long as the mount lives. One entry, because a
-/// chunked reader stays on one file; keyed by everything the map is
-/// computed from, so an `Inode` a caller built differently misses rather
-/// than being served another file's offsets.
-#[derive(Clone)]
-struct BlockMap {
-    inode_number: u32,
-    blocks_start: u64,
-    block_sizes: Arc<Vec<u32>>,
-    offsets: Arc<Vec<u64>>,
 }
 
 #[cfg(test)]
@@ -173,7 +153,6 @@ impl Filesystem {
             xattr_ids,
             exports,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
-            last_block_map: std::sync::Mutex::new(None),
         })
     }
 
@@ -421,6 +400,23 @@ impl Filesystem {
     /// length is corruption, and comes back as an error rather than as
     /// fewer bytes.
     pub fn read_file(&self, inode: &Inode, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        self.read_file_with_offsets(inode, &self.block_offsets(inode), offset, buf)
+    }
+
+    /// [`Filesystem::read_file`], with the file's block map already built
+    /// by [`Filesystem::block_offsets`].
+    ///
+    /// For a caller that reads one file many times: building the map is a
+    /// pass over every block size and an allocation, and a chunked reader
+    /// that rebuilt it per chunk did quadratic work in the file's block
+    /// count (#46). The C ABI keeps the map beside the inode it resolved.
+    pub(crate) fn read_file_with_offsets(
+        &self,
+        inode: &Inode,
+        block_offsets: &[u64],
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize> {
         if !inode.is_regular_file() {
             return Err(Error::BadInode("read_file on non-file"));
         }
@@ -431,17 +427,13 @@ impl Filesystem {
         let to_read = buf.len().min((size - offset) as usize);
         let bs = self.sb.block_size as u64;
 
-        // Each full block's absolute on-disk start, built once per file
-        // rather than once per call (#46), so per-block reads stay O(1).
-        let block_offsets = self.block_offsets(inode);
-
         let mut written = 0usize;
         while written < to_read {
             let abs_pos = offset + written as u64;
             let block_idx = (abs_pos / bs) as usize;
             let block_off = (abs_pos % bs) as usize;
 
-            let block = self.read_logical_block(inode, block_idx, &block_offsets)?;
+            let block = self.read_logical_block(inode, block_idx, block_offsets)?;
             if block_off >= block.len() {
                 // Nothing to copy and no progress to make. `read_logical_block`
                 // returns a block of exactly the length this offset was
@@ -459,32 +451,9 @@ impl Filesystem {
         Ok(written)
     }
 
-    /// Absolute on-disk start offset of each full data block, from the
-    /// last file's map when this is that file.
-    fn block_offsets(&self, inode: &Inode) -> Arc<Vec<u64>> {
-        let mut last = self
-            .last_block_map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if let Some(map) = last.as_ref() {
-            if map.inode_number == inode.inode_number
-                && map.blocks_start == inode.blocks_start
-                && *map.block_sizes == inode.block_sizes
-            {
-                return map.offsets.clone();
-            }
-        }
-        let offsets = Arc::new(Self::build_block_offsets(inode));
-        *last = Some(BlockMap {
-            inode_number: inode.inode_number,
-            blocks_start: inode.blocks_start,
-            block_sizes: Arc::new(inode.block_sizes.clone()),
-            offsets: offsets.clone(),
-        });
-        offsets
-    }
-
-    fn build_block_offsets(inode: &Inode) -> Vec<u64> {
+    /// Absolute on-disk start offset of each full data block: a prefix sum
+    /// of on-disk sizes, so per-block reads stay O(1).
+    pub(crate) fn block_offsets(&self, inode: &Inode) -> Vec<u64> {
         #[cfg(test)]
         BLOCK_MAP_BUILDS.with(|n| n.set(n.get() + 1));
         let mut offs = Vec::with_capacity(inode.block_sizes.len());
@@ -621,7 +590,6 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
-            last_block_map: std::sync::Mutex::new(None),
         }
     }
 
@@ -641,7 +609,6 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
-            last_block_map: std::sync::Mutex::new(None),
         }
     }
 

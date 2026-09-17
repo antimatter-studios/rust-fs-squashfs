@@ -187,12 +187,21 @@ unsafe fn cstr_to_path<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
 pub struct fs_squashfs_fs_t {
     fs: Filesystem,
     /// The path `fs_squashfs_read_file` resolved last, and what it
-    /// resolved to (#46). The C ABI has no open-file handle, so a caller
-    /// reading a file in chunks names the path on every call, and every
-    /// call walked it from the root again. The archive is read-only, so
-    /// a resolution stays right for the mount's life; one entry, because
-    /// a chunked reader stays on one file.
-    last_read_path: std::sync::Mutex<Option<(String, Arc<Inode>)>>,
+    /// resolved to, with its block map (#46). The C ABI has no open-file
+    /// handle, so a caller reading a file in chunks names the path on every
+    /// call, and every call walked it from the root and rebuilt the map.
+    /// The archive is read-only, so both stay right for the mount's life;
+    /// one entry, because a chunked reader stays on one file. A hit is a
+    /// string comparison and nothing proportional to the file.
+    last_read_path: std::sync::Mutex<Option<ResolvedFile>>,
+}
+
+/// A path `fs_squashfs_read_file` resolved, and the file's block map.
+#[derive(Clone)]
+struct ResolvedFile {
+    path: String,
+    inode: Arc<Inode>,
+    block_offsets: Arc<Vec<u64>>,
 }
 
 impl fs_squashfs_fs_t {
@@ -203,23 +212,33 @@ impl fs_squashfs_fs_t {
         }
     }
 
-    /// `path` resolved, from the last read's resolution when it is the
-    /// same path.
-    fn resolve_for_read(&self, path: &str) -> crate::error::Result<Arc<Inode>> {
+    /// `path` resolved, with its block map, from the last read's when it
+    /// is the same path.
+    fn resolve_for_read(&self, path: &str) -> crate::error::Result<ResolvedFile> {
         let mut last = self
             .last_read_path
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        if let Some((cached, inode)) = last.as_ref() {
-            if cached == path {
-                return Ok(inode.clone());
+        if let Some(cached) = last.as_ref() {
+            if cached.path == path {
+                return Ok(cached.clone());
             }
         }
         #[cfg(test)]
         READ_PATH_LOOKUPS.with(|n| n.set(n.get() + 1));
-        let inode = Arc::new(self.fs.lookup_path(path)?);
-        *last = Some((path.to_owned(), inode.clone()));
-        Ok(inode)
+        let inode = self.fs.lookup_path(path)?;
+        let block_offsets = if inode.is_regular_file() {
+            Arc::new(self.fs.block_offsets(&inode))
+        } else {
+            Arc::new(Vec::new())
+        };
+        let resolved = ResolvedFile {
+            path: path.to_owned(),
+            inode: Arc::new(inode),
+            block_offsets,
+        };
+        *last = Some(resolved.clone());
+        Ok(resolved)
     }
 }
 
@@ -730,13 +749,14 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
                 return -1;
             };
 
-            let inode = match handle.resolve_for_read(path) {
+            let resolved = match handle.resolve_for_read(path) {
                 Ok(i) => i,
                 Err(e) => {
                     set_err_from(&e, &format!("read_file {path}"));
                     return -1;
                 }
             };
+            let inode = &resolved.inode;
             if !inode.is_regular_file() {
                 set_err_msg(
                     &format!("read_file {path}: not a regular file"),
@@ -748,7 +768,7 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
             // passing u64::MAX can't fabricate an oversized slice.
             let length = length.min(inode.file_size).min(usize::MAX as u64) as usize;
             let out = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, length) };
-            match fs.read_file(&inode, offset, out) {
+            match fs.read_file_with_offsets(inode, &resolved.block_offsets, offset, out) {
                 Ok(n) => n as i64,
                 Err(e) => {
                     set_err_from(&e, &format!("read_file {path}"));
@@ -1092,7 +1112,7 @@ mod chunked_read_tests {
             (lookups() - l0, maps() - m0),
             (3, 3),
             "another file, then back: one more resolution and one more map each, since \
-             both caches hold one file"
+             the cache holds one file"
         );
         unsafe { fs_squashfs_umount(handle) };
     }
