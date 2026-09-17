@@ -70,6 +70,33 @@ pub struct Filesystem {
     /// them. Both are needed, and this is the one that moves the clock:
     /// see `docs/read-path-cost.md`.
     meta_cache: MetaCache,
+    /// The block map of the file read last (#46). See [`BlockMap`].
+    last_block_map: std::sync::Mutex<Option<BlockMap>>,
+}
+
+/// One file's absolute on-disk block offsets, kept between reads.
+///
+/// `read_file` used to rebuild this -- a prefix sum over every block
+/// size, and a `Vec` to hold it -- on every call, and a caller reading a
+/// file in chunks calls once per chunk: 8192 chunks of an 8192-block file
+/// was 67 million additions. The archive is read-only, so a map built
+/// once is right for as long as the mount lives. One entry, because a
+/// chunked reader stays on one file; keyed by everything the map is
+/// computed from, so an `Inode` a caller built differently misses rather
+/// than being served another file's offsets.
+#[derive(Clone)]
+struct BlockMap {
+    inode_number: u32,
+    blocks_start: u64,
+    block_sizes: Arc<Vec<u32>>,
+    offsets: Arc<Vec<u64>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many block maps this thread has built, for the tests that pin
+    /// a chunked read to one.
+    pub(crate) static BLOCK_MAP_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Filesystem {
@@ -146,6 +173,7 @@ impl Filesystem {
             xattr_ids,
             exports,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            last_block_map: std::sync::Mutex::new(None),
         })
     }
 
@@ -403,8 +431,8 @@ impl Filesystem {
         let to_read = buf.len().min((size - offset) as usize);
         let bs = self.sb.block_size as u64;
 
-        // Precompute each full block's absolute on-disk start once
-        // (prefix sum of on-disk sizes) so per-block reads stay O(1).
+        // Each full block's absolute on-disk start, built once per file
+        // rather than once per call (#46), so per-block reads stay O(1).
         let block_offsets = self.block_offsets(inode);
 
         let mut written = 0usize;
@@ -431,8 +459,34 @@ impl Filesystem {
         Ok(written)
     }
 
-    /// Absolute on-disk start offset of each full data block.
-    fn block_offsets(&self, inode: &Inode) -> Vec<u64> {
+    /// Absolute on-disk start offset of each full data block, from the
+    /// last file's map when this is that file.
+    fn block_offsets(&self, inode: &Inode) -> Arc<Vec<u64>> {
+        let mut last = self
+            .last_block_map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(map) = last.as_ref() {
+            if map.inode_number == inode.inode_number
+                && map.blocks_start == inode.blocks_start
+                && *map.block_sizes == inode.block_sizes
+            {
+                return map.offsets.clone();
+            }
+        }
+        let offsets = Arc::new(Self::build_block_offsets(inode));
+        *last = Some(BlockMap {
+            inode_number: inode.inode_number,
+            blocks_start: inode.blocks_start,
+            block_sizes: Arc::new(inode.block_sizes.clone()),
+            offsets: offsets.clone(),
+        });
+        offsets
+    }
+
+    fn build_block_offsets(inode: &Inode) -> Vec<u64> {
+        #[cfg(test)]
+        BLOCK_MAP_BUILDS.with(|n| n.set(n.get() + 1));
         let mut offs = Vec::with_capacity(inode.block_sizes.len());
         // Saturating: `blocks_start` is a raw `u64` for an extended
         // file inode, so the running sum can leave a `u64` -- and in
@@ -567,6 +621,7 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            last_block_map: std::sync::Mutex::new(None),
         }
     }
 
@@ -586,6 +641,7 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            last_block_map: std::sync::Mutex::new(None),
         }
     }
 
