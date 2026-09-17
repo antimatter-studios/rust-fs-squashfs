@@ -1,0 +1,54 @@
+# .github-guard — declarations github-guard reads (see the github-guard skill:
+# https://github.com/antimatter-studios/agent-skills/blob/main/.claude/skills/github-guard/README.md).
+# git-config format: check with `git config -f .github-guard --list`, and
+# double-quote any value containing # or ;.
+
+# Required status checks for main. A declaration beats discovery exactly.
+#
+# Discovery requires checks BY JOB NAME, which is a guess at the PR gate and
+# drifts silently: a renamed job, an added workflow, or any future check
+# reporting under the github-actions app changes what is required without
+# anyone deciding to. Pinning it costs nothing and makes the intent reviewable.
+#
+# Written because the settings page had drifted. Before #101 the required
+# contexts were exactly two -- `test-ubuntu-latest` and `validate against
+# kernel squashfs driver` -- while the last run on main concluded three:
+# `test-ubuntu-24.04-arm` had been passing all along and could not block a
+# merge. Nothing compared the list against the jobs ci.yml defines, because
+# the list did not live in the repository.
+#
+# `test-ubuntu-24.04-arm` is here for the failures it is the only leg that
+# can see. `c_char` is unsigned on aarch64-linux and signed on x86_64, and
+# this crate has a C ABI, so a `buf as *mut u8` that is a real cast on one
+# target is a no-op cast on the other and clippy refuses it, and a `char`
+# buffer written `[0i8; N]` does not compile on aarch64 at all. Both of those
+# were sitting on main with no step that could see them (#78). rust-fs-ntfs#268
+# is the same failure in the sibling driver, found by adding this exact leg.
+# Advisory, it reports the breakage after the merge; required, it stops it.
+# A cross `cargo check` would lint but not run, so the native runner stays.
+#
+# `validate against kernel squashfs driver` is the triple-agreement job: an
+# image built by mksquashfs, read back by the in-kernel squashfs driver via a
+# loop mount, by upstream unsquashfs, and by our own lssquashfs, across all
+# five compressors. It is the only check that compares this reader against
+# the kernel rather than against this repository's own expectations, and it
+# runs on pull_request, so it gates.
+#
+# Deliberately NOT declared: the `test` job of release.yml. It triggers on a
+# `v*.*.*` tag push and never on a pull request, and a required check that
+# cannot report on a PR is a permanent block on every merge.
+#
+# Third-party reviewers are excluded before this file is read:
+# github-protect-main.sh filters `select(.app.slug=="github-actions")` on
+# every one of its queries. Verified against this repository -- the check
+# suite of the most recent pull_request run contains exactly the three names
+# below and nothing else.
+#
+# Names must match the check-run names GitHub reports. This workflow sets
+# `name: test-${{ matrix.os }}` on the matrix job, so the runs are spelled
+# `test-ubuntu-latest`, NOT the default `test / ubuntu-latest` job-matrix
+# spelling other repositories in the constellation use.
+[checks]
+	required = test-ubuntu-latest
+	required = test-ubuntu-24.04-arm
+	required = "validate against kernel squashfs driver"

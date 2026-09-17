@@ -61,13 +61,60 @@ jobs:
           setfattr --version | head -1
 
       - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --all-targets
+      # A FLOOR, BECAUSE THE FAILURE MODE HERE IS AN ABSENCE, and it is
+      # worse here than in ci.yml: `publish` has `needs: test`, so a test
+      # job that executed nothing and exited 0 is the thing that says a
+      # crate is fit to go to crates.io. `cargo test` exits 0 on
+      # "0 passed; 0 failed", so a build that emitted no test binaries or
+      # a harness that died before its first case reports the same green
+      # as the full suite, and the release ships on it. Only a count
+      # taken from outside the suite sees that. See #101.
+      #
+      # Measured 2026-09-06 on run 34036563214 (tag v0.1.5, the last
+      # green release): 124 executed by this step. Floor 110. The number
+      # is lower than ci.yml's 262 for two reasons and neither is a
+      # problem: `--all-targets` runs no doctests, and the suite has
+      # grown since v0.1.5. A floor measured from an older release is
+      # conservative by construction -- it is here to refuse zero, not to
+      # track the suite's size.
+      - name: cargo test (--all-targets), with an executed-test floor
+        run: |
+          cargo test --locked --all-targets 2>&1 | tee "$RUNNER_TEMP/test-all-targets.log"
+          rc=${PIPESTATUS[0]}
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-all-targets.log" | awk '{s+=$4} END{print s+0}')
+          echo "tests executed: $n (floor 110)"
+          if [ "$n" -lt 110 ]; then
+              echo "::error::only $n tests executed, floor is 110 — 124 ran on 2026-09-06 (run 34036563214, v0.1.5), and a release must not publish on a test job that stopped early rather than passed"
+              exit 1
+          fi
+          exit "$rc"
       # Oracle tests are #[ignore]-gated so a fresh checkout without
       # squashfs-tools still passes `cargo test`. The oracle is installed
       # above, so opt them in here — this is the canonical "can we read
       # what the upstream tooling emits, across every compressor" gate, the
       # strongest signal the release artifact is sound.
-      - run: cargo test --locked --all-targets -- --ignored
+      #
+      # ITS OWN FLOOR, BECAUSE `--ignored` SELECTS A DISJOINT SET: it runs
+      # the tests the step above skipped and none of the ones it ran, so
+      # the `install squashfs-tools and attr` step above failing quietly,
+      # or the `#[ignore]` attribute being lifted, empties this step alone
+      # and leaves the other at full strength. Being the canonical gate
+      # above makes an empty run here the most expensive green in the
+      # workflow: a release tagged on a comparison against nothing.
+      #
+      # Measured 2026-09-06 on run 34036563214 (tag v0.1.5): 17 executed
+      # by this step. Floor 15.
+      - name: cargo test (--all-targets, --ignored oracles), with an executed-test floor
+        run: |
+          cargo test --locked --all-targets -- --ignored 2>&1 | tee "$RUNNER_TEMP/test-all-targets-ignored.log"
+          rc=${PIPESTATUS[0]}
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-all-targets-ignored.log" | awk '{s+=$4} END{print s+0}')
+          echo "ignored-gated tests executed: $n (floor 15)"
+          if [ "$n" -lt 15 ]; then
+              echo "::error::only $n ignored-gated tests executed, floor is 15 — 17 ran on 2026-09-06 (run 34036563214, v0.1.5); the oracle suite did not run, so this release was validated against nothing"
+              exit 1
+          fi
+          exit "$rc"
 
   publish:
     name: publish to crates.io

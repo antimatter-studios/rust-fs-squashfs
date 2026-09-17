@@ -62,11 +62,65 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --release
+      # A FLOOR, BECAUSE THE FAILURE MODE HERE IS AN ABSENCE.
+      #
+      # This repository already refuses two neighbouring absences from
+      # inside the suite: tests/common/mod.rs turns an oracle binary that
+      # is not on PATH into a CI failure, and tests/xattr_oracle.rs does
+      # the same for a tempdir that cannot hold a `user.*` attribute.
+      # Both are asserts in test bodies, so both need a test to reach
+      # them. A run that executed zero tests reaches neither, and passes
+      # having compared this driver against nothing at all -- which is
+      # the exact outcome those two asserts exist to refuse. Nothing
+      # inside the suite can see the suite not running.
+      #
+      # `cargo test` exits 0 on "0 passed; 0 failed", so a filter that
+      # selects nothing, a build that emitted no test binaries, or a
+      # harness that died before its first case all report the same green
+      # as a full run. Only a count taken from outside the suite sees it.
+      #
+      # Measured 2026-09-17 on run 35176059475 (main, aff1c80): 262
+      # executed by this step, identically on the x86_64 and the aarch64
+      # leg. Floor 240; it moves up with the suite and never down.
+      - name: cargo test (release), with an executed-test floor
+        run: |
+          cargo test --locked --release 2>&1 | tee "$RUNNER_TEMP/test-release.log"
+          rc=${PIPESTATUS[0]}
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-release.log" | awk '{s+=$4} END{print s+0}')
+          echo "tests executed: $n (floor 240)"
+          if [ "$n" -lt 240 ]; then
+              echo "::error::only $n tests executed, floor is 240 — 262 ran on 2026-09-17 (run 35176059475), and a run that executes less than that stopped early rather than passed"
+              exit 1
+          fi
+          exit "$rc"
       # Oracle tests are #[ignore]-gated so a fresh checkout without
       # squashfs-tools still passes `cargo test`. CI installed the oracle
       # above, so we opt them in here.
-      - run: cargo test --locked --release -- --ignored
+      #
+      # ITS OWN FLOOR, BECAUSE IT SELECTS A DISJOINT SET. `--ignored` runs
+      # the tests the step above did not run and none of the tests it did,
+      # so the two counts can collapse independently: squashfs-tools
+      # disappearing from the runner, or the `#[ignore]` attribute being
+      # lifted off the oracles, empties this step while leaving the one
+      # above at full strength. A single shared number would not notice.
+      # These are the cross-validation tests -- the only ones that check
+      # this driver against mksquashfs rather than against this
+      # repository's own expectations -- so an empty run here is the most
+      # expensive green in the workflow.
+      #
+      # Measured 2026-09-17 on run 35176059475 (main, aff1c80): 20
+      # executed by this step, identically on both legs. Floor 18.
+      - name: cargo test (release, --ignored oracles), with an executed-test floor
+        run: |
+          cargo test --locked --release -- --ignored 2>&1 | tee "$RUNNER_TEMP/test-ignored.log"
+          rc=${PIPESTATUS[0]}
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-ignored.log" | awk '{s+=$4} END{print s+0}')
+          echo "ignored-gated tests executed: $n (floor 18)"
+          if [ "$n" -lt 18 ]; then
+              echo "::error::only $n ignored-gated tests executed, floor is 18 — 20 ran on 2026-09-17 (run 35176059475); the oracle suite did not run, so this run compared the driver against nothing"
+              exit 1
+          fi
+          exit "$rc"
 
       # AND ONCE WITHOUT `--release` -- THE PR GATE COULD NOT SEE AN
       # OVERFLOW OTHERWISE.
@@ -98,7 +152,31 @@ jobs:
       # ci.yml -- this workflow specifically, not release.yml -- still
       # runs a `cargo test` without `--release` that sets it, and says
       # why release.yml having one is not enough.
-      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib
+      #
+      # AND ITS OWN FLOOR, for the third disjoint selection in this job.
+      # `--lib` selects only the unit tests, so neither of the floors
+      # above covers it: the integration tests could all still run while
+      # the lib target built no test harness at all, and this step would
+      # report green on nothing. That matters more here than elsewhere,
+      # because `the_build_the_gate_asked_to_check_does_check` -- the
+      # test that proves overflow checks are actually on in this run --
+      # lives in the lib target. If this step executes zero tests, the
+      # assertion that the overflow gate is a gate has itself gone
+      # missing, and the workflow says so with a tick.
+      #
+      # Measured 2026-09-17 on run 35176059475 (main, aff1c80): 91
+      # executed by this step, identically on both legs. Floor 85.
+      - name: cargo test (debug --lib, overflow checks), with an executed-test floor
+        run: |
+          EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib 2>&1 | tee "$RUNNER_TEMP/test-overflow.log"
+          rc=${PIPESTATUS[0]}
+          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-overflow.log" | awk '{s+=$4} END{print s+0}')
+          echo "lib tests executed: $n (floor 85)"
+          if [ "$n" -lt 85 ]; then
+              echo "::error::only $n lib tests executed, floor is 85 — 91 ran on 2026-09-17 (run 35176059475); with an empty lib run nothing checked that overflow checks are on"
+              exit 1
+          fi
+          exit "$rc"
 
   # Validate the reader + lssquashfs against the kernel's own SquashFS
   # driver. We build an image with mksquashfs, loop-mount it with the
