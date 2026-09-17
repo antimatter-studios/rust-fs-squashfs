@@ -197,7 +197,12 @@ pub struct fs_squashfs_fs_t {
 /// and a larger one truncates for no reason.
 ///
 /// The `- 1` is the NUL a C caller expects to find.
-pub const SQFS_NAME_CAP: usize = 256;
+///
+/// Derived from the format's own limit rather than written beside it.
+/// It was a bare 256, the same number as `SQUASHFS_NAME_LEN`, so the
+/// longest legal name lost its last byte to the NUL and came back as a
+/// name that does not open (#56).
+pub const SQFS_NAME_CAP: usize = crate::dir::SQUASHFS_NAME_LEN + 1;
 
 /// Capacity of `compression_name` in [`SqfsInfo`], same contract.
 pub const SQFS_COMPRESSION_NAME_CAP: usize = 16;
@@ -225,7 +230,9 @@ pub struct fs_squashfs_attr_t {
 pub struct fs_squashfs_dirent_t {
     pub inode: u32,
     pub file_type: u8,
-    pub name_len: u8,
+    /// Bytes in `name` before the NUL. `u16` because 256 does not fit
+    /// in a `u8`.
+    pub name_len: u16,
     pub name: [c_char; SQFS_NAME_CAP],
 }
 
@@ -300,7 +307,8 @@ fn dir_entry_to_abi(e: &crate::dir::DirEntry) -> fs_squashfs_dirent_t {
     fs_squashfs_dirent_t {
         inode: e.inode_number,
         file_type: FileType::from_type_id(e.type_id).to_abi(),
-        name_len: copy as u8,
+        // `copy` <= SQUASHFS_NAME_LEN (256): the parser refuses longer.
+        name_len: copy as u16,
         name,
     }
 }
@@ -911,7 +919,7 @@ mod buffer_capacity_tests {
     /// this module cannot make: they derive both sides from the
     /// constant, so changing it changes both and they stay green. The
     /// header is the **external** oracle — a C caller allocates
-    /// `char name[256]` because the header says so, and a Rust struct
+    /// `char name[SQFS_NAME_CAP]` because the header says so, and a Rust struct
     /// that disagrees writes past the end of memory the caller owns.
     #[test]
     fn the_buffer_capacities_match_the_published_c_header() {
