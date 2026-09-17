@@ -6,7 +6,10 @@
 //! [`Filesystem::read_file`] / [`Filesystem::read_dir`] /
 //! [`Filesystem::read_symlink_target`].
 
-use std::sync::Arc;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
+
+use lru::LruCache;
 
 use crate::decompress::{self, Compressor};
 use crate::dir::{self, DirEntry};
@@ -46,6 +49,105 @@ pub const DEFAULT_CACHE_BLOCKS: usize = 32;
 /// blocks a walk returns to are far fewer than that. The measurement in
 /// `docs/read-path-cost.md` was taken at this value.
 pub const DEFAULT_META_CACHE_BLOCKS: usize = 256;
+
+/// How many **decompressed** data and fragment blocks a mount holds.
+///
+/// A third cache, separate from the metadata one on purpose: data is
+/// unbounded where metadata is not, and a shared cache would let one
+/// large file evict the directory blocks every lookup depends on.
+///
+/// Sized in the archive's block, so 8 is 1 MiB at `mksquashfs`'s default
+/// 128 KiB and 8 MiB at the 1 MiB maximum. What it has to hold is small:
+/// the block a sequential reader is in the middle of, and the handful of
+/// fragment blocks the small files being read share (#47).
+pub const DEFAULT_DATA_CACHE_BLOCKS: usize = 8;
+
+/// Decompressed data/fragment blocks, keyed by where and how they were
+/// decoded.
+///
+/// The key is the whole request -- offset, size word and output bound --
+/// not the offset alone: the same offset asked for with a different size
+/// word or bound is a different decode (a crafted inode can make one),
+/// and handing back the other's bytes would turn a refusal into a read.
+/// No invalidation, for the reason `MetaCache` gives: the archive is
+/// read-only.
+struct DataCache {
+    inner: Mutex<DataCacheInner>,
+}
+
+type DataKey = (u64, u32, usize);
+
+struct DataCacheInner {
+    lru: Option<LruCache<DataKey, Arc<Vec<u8>>>>,
+    hits: u64,
+    misses: u64,
+}
+
+impl DataCache {
+    fn new(capacity: usize) -> Self {
+        DataCache {
+            inner: Mutex::new(DataCacheInner {
+                lru: NonZeroUsize::new(capacity).map(LruCache::new),
+                hits: 0,
+                misses: 0,
+            }),
+        }
+    }
+
+    fn set_capacity(&self, capacity: usize) {
+        let mut g = self.inner.lock().expect("data cache lock");
+        g.lru = NonZeroUsize::new(capacity).map(LruCache::new);
+        g.hits = 0;
+        g.misses = 0;
+    }
+
+    fn stats(&self) -> (usize, usize, u64, u64) {
+        let g = self.inner.lock().expect("data cache lock");
+        let (entries, capacity) = match &g.lru {
+            Some(lru) => (lru.len(), lru.cap().get()),
+            None => (0, 0),
+        };
+        (entries, capacity, g.hits, g.misses)
+    }
+
+    fn get(&self, key: &DataKey) -> Option<Arc<Vec<u8>>> {
+        let mut g = self.inner.lock().expect("data cache lock");
+        let lru = g.lru.as_mut()?;
+        match lru.get(key) {
+            Some(hit) => {
+                let hit = hit.clone();
+                g.hits += 1;
+                Some(hit)
+            }
+            None => {
+                g.misses += 1;
+                None
+            }
+        }
+    }
+
+    fn insert(&self, key: DataKey, block: Arc<Vec<u8>>) {
+        let mut g = self.inner.lock().expect("data cache lock");
+        if let Some(lru) = g.lru.as_mut() {
+            lru.put(key, block);
+        }
+    }
+}
+
+/// One logical block of a file: a shared decoded block and the part of
+/// it that belongs to this file (all of it, for a full data block; the
+/// tail, for a fragment).
+struct LogicalBlock {
+    bytes: Arc<Vec<u8>>,
+    start: usize,
+    end: usize,
+}
+
+impl LogicalBlock {
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[self.start..self.end]
+    }
+}
 
 /// Where the directory table ends.
 ///
@@ -106,6 +208,9 @@ pub struct Filesystem {
     /// Worked out once, at open.
     dir_table_end: u64,
     meta_cache: MetaCache,
+    /// Decompressed data and fragment blocks; see
+    /// [`DEFAULT_DATA_CACHE_BLOCKS`].
+    data_cache: DataCache,
 }
 
 #[cfg(test)]
@@ -191,6 +296,7 @@ impl Filesystem {
             xattr_ids,
             exports,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            data_cache: DataCache::new(DEFAULT_DATA_CACHE_BLOCKS),
         })
     }
 
@@ -205,6 +311,29 @@ impl Filesystem {
     /// off; anything already held is dropped either way.
     pub fn set_meta_cache_capacity(&self, blocks: usize) {
         self.meta_cache.set_capacity(blocks);
+    }
+
+    /// Resize the decompressed data/fragment cache, as a builder. Zero
+    /// switches it off.
+    pub fn with_data_cache_capacity(self, blocks: usize) -> Self {
+        self.set_data_cache_capacity(blocks);
+        self
+    }
+
+    /// Resize the decompressed data/fragment cache in place. Zero switches
+    /// it off; anything already held is dropped either way.
+    pub fn set_data_cache_capacity(&self, blocks: usize) {
+        self.data_cache.set_capacity(blocks);
+    }
+
+    /// `(entries, capacity, hits, misses)` for the decompressed
+    /// data/fragment cache. A miss is one data block put through the codec
+    /// (or read raw, when stored uncompressed) while the cache is on. A
+    /// cache switched off (capacity zero) counts nothing, as the metadata
+    /// cache does: it is not being asked, so a 0% hit rate over its reads
+    /// would describe nothing.
+    pub fn data_cache_stats(&self) -> (usize, usize, u64, u64) {
+        self.data_cache.stats()
     }
 
     /// `(entries, capacity, hits, misses)` for the decompressed-metadata
@@ -479,6 +608,7 @@ impl Filesystem {
             let block_off = (abs_pos % bs) as usize;
 
             let block = self.read_logical_block(inode, block_idx, block_offsets)?;
+            let block = block.as_slice();
             if block_off >= block.len() {
                 // Nothing to copy and no progress to make. `read_logical_block`
                 // returns a block of exactly the length this offset was
@@ -523,7 +653,7 @@ impl Filesystem {
         inode: &Inode,
         block_idx: usize,
         block_offsets: &[u64],
-    ) -> Result<Vec<u8>> {
+    ) -> Result<LogicalBlock> {
         let bs = self.sb.block_size as u64;
         let n_full = inode.block_sizes.len();
 
@@ -532,7 +662,11 @@ impl Filesystem {
             let size_word = inode.block_sizes[block_idx];
             if table::data_on_disk_size(size_word) == 0 {
                 // Sparse block — all zeros, no on-disk payload.
-                return Ok(vec![0u8; logical_len]);
+                return Ok(LogicalBlock {
+                    bytes: Arc::new(vec![0u8; logical_len]),
+                    start: 0,
+                    end: logical_len,
+                });
             }
             let block = self.read_data_block(block_offsets[block_idx], size_word, logical_len)?;
             // A full data block's decoded length is not a matter of opinion:
@@ -544,7 +678,11 @@ impl Filesystem {
             if block.len() != logical_len {
                 return Err(Error::BadInode("data block decoded to the wrong length"));
             }
-            Ok(block)
+            Ok(LogicalBlock {
+                bytes: block,
+                start: 0,
+                end: logical_len,
+            })
         } else if inode.has_fragment() {
             let frag = self
                 .fragments
@@ -560,7 +698,13 @@ impl Filesystem {
             if end > frag_block.len() {
                 return Err(Error::BadInode("fragment tail past fragment block end"));
             }
-            Ok(frag_block[start..end].to_vec())
+            // The whole fragment block stays shared: every small file
+            // whose tail lives in it reads its own range out of one decode.
+            Ok(LogicalBlock {
+                bytes: frag_block,
+                start,
+                end,
+            })
         } else {
             Err(Error::OutOfRange)
         }
@@ -568,7 +712,35 @@ impl Filesystem {
 
     /// Read + decompress one data block. `size_word` carries the on-disk
     /// size + compressed bit; `max_out` bounds the decompressed length.
-    fn read_data_block(&self, abs_off: u64, size_word: u32, max_out: usize) -> Result<Vec<u8>> {
+    ///
+    /// Held in `data_cache` once decoded, so a block read in chunks, or a
+    /// fragment block shared by many small files, is decoded once rather
+    /// than once per call (#47). Failures are not cached.
+    ///
+    /// Once per block for readers taking turns, not for readers racing:
+    /// the lookup and the insert take the lock separately, with the decode
+    /// between them, so two threads that miss the same block at the same
+    /// moment each decode it, each count a miss, and the second insert
+    /// replaces the first with identical bytes. That is deliberate. Holding
+    /// the lock across a decode would put every read of every file behind
+    /// the slowest block being decoded.
+    fn read_data_block(
+        &self,
+        abs_off: u64,
+        size_word: u32,
+        max_out: usize,
+    ) -> Result<Arc<Vec<u8>>> {
+        let key = (abs_off, size_word, max_out);
+        if let Some(hit) = self.data_cache.get(&key) {
+            return Ok(hit);
+        }
+        let block = Arc::new(self.decode_data_block(abs_off, size_word, max_out)?);
+        self.data_cache.insert(key, block.clone());
+        Ok(block)
+    }
+
+    /// The device read and the codec, with no cache in front of them.
+    fn decode_data_block(&self, abs_off: u64, size_word: u32, max_out: usize) -> Result<Vec<u8>> {
         let on_disk = table::data_on_disk_size(size_word) as usize;
         // THE SIZE WORD IS THE ALLOCATION, and it comes off the disk.
         //
@@ -635,6 +807,7 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            data_cache: DataCache::new(DEFAULT_DATA_CACHE_BLOCKS),
             dir_table_end: u64::MAX,
         }
     }
@@ -655,6 +828,7 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            data_cache: DataCache::new(DEFAULT_DATA_CACHE_BLOCKS),
             dir_table_end: u64::MAX,
         }
     }
@@ -829,6 +1003,7 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            data_cache: DataCache::new(DEFAULT_DATA_CACHE_BLOCKS),
         };
 
         let mut dir = file_inode(0, Vec::new());
@@ -903,6 +1078,54 @@ mod tests {
             .expect("a full-size uncompressed block is legal");
         assert_eq!(n, BLOCK_SIZE);
         assert_eq!(buf, payload);
+    }
+
+    /// The data cache is keyed by the whole decode request, not the
+    /// offset alone (#47).
+    ///
+    /// Two inodes may name the same offset with different size words; a
+    /// crafted one does it to borrow a good block. Keyed by offset, the
+    /// second read was served the first one's 4096 decoded bytes and its
+    /// own 100-byte block was never checked against the length it must
+    /// decode to.
+    #[test]
+    fn the_data_cache_does_not_serve_a_block_to_a_different_size_word() {
+        let fs = fs_over(vec![0xABu8; BLOCK_SIZE]);
+        let full = BLOCK_SIZE as u32 | crate::table::DATA_UNCOMPRESSED_BIT;
+        let mut buf = vec![0u8; BLOCK_SIZE];
+        fs.read_file(&file_inode(BLOCK_SIZE as u64, vec![full]), 0, &mut buf)
+            .expect("a full-size uncompressed block is legal");
+
+        let short = 100 | crate::table::DATA_UNCOMPRESSED_BIT;
+        match fs.read_file(&file_inode(BLOCK_SIZE as u64, vec![short]), 0, &mut buf) {
+            Err(Error::BadInode(m)) => assert!(m.contains("wrong length"), "got {m:?}"),
+            other => {
+                panic!("the cached 4096-byte block was served for a 100-byte size word: {other:?}")
+            }
+        }
+    }
+
+    /// A data cache switched off still reads, and counts neither hits nor
+    /// misses; switched on, the same two reads are one miss and one hit.
+    #[test]
+    fn a_disabled_data_cache_reads_and_counts_nothing() {
+        let full = BLOCK_SIZE as u32 | crate::table::DATA_UNCOMPRESSED_BIT;
+        let inode = file_inode(BLOCK_SIZE as u64, vec![full]);
+        let mut buf = vec![0u8; BLOCK_SIZE];
+
+        let fs = fs_over(vec![0xABu8; BLOCK_SIZE]).with_data_cache_capacity(0);
+        for _ in 0..2 {
+            assert_eq!(fs.read_file(&inode, 0, &mut buf).unwrap(), BLOCK_SIZE);
+            assert!(buf.iter().all(|&b| b == 0xAB));
+        }
+        assert_eq!(fs.data_cache_stats(), (0, 0, 0, 0));
+
+        fs.set_data_cache_capacity(DEFAULT_DATA_CACHE_BLOCKS);
+        for _ in 0..2 {
+            fs.read_file(&inode, 0, &mut buf).unwrap();
+        }
+        let (entries, _, hits, misses) = fs.data_cache_stats();
+        assert_eq!((entries, hits, misses), (1, 1, 1));
     }
 
     #[test]
