@@ -186,6 +186,66 @@ unsafe fn cstr_to_path<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
 
 pub struct fs_squashfs_fs_t {
     fs: Filesystem,
+    /// The path `fs_squashfs_read_file` resolved last, and what it
+    /// resolved to, with its block map (#46). The C ABI has no open-file
+    /// handle, so a caller reading a file in chunks names the path on every
+    /// call, and every call walked it from the root and rebuilt the map.
+    /// The archive is read-only, so both stay right for the mount's life;
+    /// one entry, because a chunked reader stays on one file. A hit is a
+    /// string comparison and nothing proportional to the file.
+    last_read_path: std::sync::Mutex<Option<ResolvedFile>>,
+}
+
+/// A path `fs_squashfs_read_file` resolved, and the file's block map.
+#[derive(Clone)]
+struct ResolvedFile {
+    path: String,
+    inode: Arc<Inode>,
+    block_offsets: Arc<Vec<u64>>,
+}
+
+impl fs_squashfs_fs_t {
+    fn new(fs: Filesystem) -> Self {
+        Self {
+            fs,
+            last_read_path: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// `path` resolved, with its block map, from the last read's when it
+    /// is the same path.
+    fn resolve_for_read(&self, path: &str) -> crate::error::Result<ResolvedFile> {
+        let mut last = self
+            .last_read_path
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(cached) = last.as_ref() {
+            if cached.path == path {
+                return Ok(cached.clone());
+            }
+        }
+        #[cfg(test)]
+        READ_PATH_LOOKUPS.with(|n| n.set(n.get() + 1));
+        let inode = self.fs.lookup_path(path)?;
+        let block_offsets = if inode.is_regular_file() {
+            Arc::new(self.fs.block_offsets(&inode))
+        } else {
+            Arc::new(Vec::new())
+        };
+        let resolved = ResolvedFile {
+            path: path.to_owned(),
+            inode: Arc::new(inode),
+            block_offsets,
+        };
+        *last = Some(resolved.clone());
+        Ok(resolved)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Path resolutions `fs_squashfs_read_file` has made on this thread.
+    static READ_PATH_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Capacity of the `name` buffer in [`SqfsDirEntry`], in bytes.
@@ -315,7 +375,7 @@ fn dir_entry_to_abi(e: &crate::dir::DirEntry) -> fs_squashfs_dirent_t {
 
 fn mount_from_device(dev: Arc<dyn BlockRead>, context: &str) -> *mut fs_squashfs_fs_t {
     match Filesystem::open(dev) {
-        Ok(fs) => Box::into_raw(Box::new(fs_squashfs_fs_t { fs })),
+        Ok(fs) => Box::into_raw(Box::new(fs_squashfs_fs_t::new(fs))),
         Err(e) => {
             set_err_from(&e, context);
             std::ptr::null_mut()
@@ -683,18 +743,20 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
                 set_err_msg("null fs, path, or buf", errno::EINVAL);
                 return -1;
             }
-            let fs = unsafe { &(*fs).fs };
+            let handle = unsafe { &*fs };
+            let fs = &handle.fs;
             let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
                 return -1;
             };
 
-            let inode = match fs.lookup_path(path) {
+            let resolved = match handle.resolve_for_read(path) {
                 Ok(i) => i,
                 Err(e) => {
                     set_err_from(&e, &format!("read_file {path}"));
                     return -1;
                 }
             };
+            let inode = &resolved.inode;
             if !inode.is_regular_file() {
                 set_err_msg(
                     &format!("read_file {path}: not a regular file"),
@@ -706,7 +768,7 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
             // passing u64::MAX can't fabricate an oversized slice.
             let length = length.min(inode.file_size).min(usize::MAX as u64) as usize;
             let out = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, length) };
-            match fs.read_file(&inode, offset, out) {
+            match fs.read_file_with_offsets(inode, &resolved.block_offsets, offset, out) {
                 Ok(n) => n as i64,
                 Err(e) => {
                     set_err_from(&e, &format!("read_file {path}"));
@@ -963,5 +1025,95 @@ mod buffer_capacity_tests {
     #[test]
     fn a_non_null_argument_is_allowed_through() {
         assert_eq!(reject_if_null(false, "fs", -1), None);
+    }
+}
+
+#[cfg(test)]
+mod chunked_read_tests {
+    use super::*;
+    use std::process::Command;
+
+    /// An image of two files, the larger one of many 4 KiB blocks, or
+    /// `None` without `mksquashfs`.
+    fn image(dir: &std::path::Path, big: &[u8]) -> Option<std::path::PathBuf> {
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("big.bin"), big).unwrap();
+        std::fs::write(src.join("small.txt"), b"small").unwrap();
+        let img = dir.join("img.sqfs");
+        let out = Command::new("mksquashfs")
+            .arg(&src)
+            .arg(&img)
+            .args(["-b", "4096", "-noappend", "-no-progress", "-no-xattrs"])
+            .output();
+        match out {
+            Ok(out) if out.status.success() => Some(img),
+            Ok(out) => panic!("mksquashfs: {}", String::from_utf8_lossy(&out.stderr)),
+            Err(_) => None,
+        }
+    }
+
+    fn read(handle: *mut fs_squashfs_fs_t, path: &str, offset: u64, len: usize) -> Vec<u8> {
+        let c = CString::new(path).unwrap();
+        let mut buf = vec![0u8; len];
+        let n = unsafe {
+            fs_squashfs_read_file(
+                handle,
+                c.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                offset,
+                len as u64,
+            )
+        };
+        assert!(n >= 0, "read_file {path} at {offset}");
+        buf.truncate(n as usize);
+        buf
+    }
+
+    /// A FILE READ IN CHUNKS IS RESOLVED ONCE AND MAPPED ONCE (#46).
+    ///
+    /// Each `fs_squashfs_read_file` call walked the path from the root and
+    /// rebuilt the file's whole block map, so reading a file of N blocks in
+    /// block-sized chunks did N resolutions and N maps of N entries. Here a
+    /// 512-block file read in 4 KiB chunks must come back whole with one
+    /// resolution and one map; reading another file and returning each
+    /// cost one more, so the caches are what change the count.
+    #[test]
+    fn a_chunked_read_resolves_the_path_and_builds_the_block_map_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let big: Vec<u8> = (0..512 * 4096u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let Some(img) = image(dir.path(), &big) else {
+            eprintln!("no mksquashfs -- skipping");
+            return;
+        };
+        let c_img = CString::new(img.to_str().unwrap()).unwrap();
+        let handle = unsafe { fs_squashfs_mount(c_img.as_ptr()) };
+        assert!(!handle.is_null(), "mount");
+
+        let lookups = || READ_PATH_LOOKUPS.with(|n| n.get());
+        let maps = || crate::fs::BLOCK_MAP_BUILDS.with(|n| n.get());
+        let (l0, m0) = (lookups(), maps());
+
+        let mut got = Vec::with_capacity(big.len());
+        while got.len() < big.len() {
+            let chunk = read(handle, "/big.bin", got.len() as u64, 4096);
+            assert!(!chunk.is_empty(), "short read at {}", got.len());
+            got.extend_from_slice(&chunk);
+        }
+        assert!(got == big, "the chunked read differs from the file");
+        assert_eq!(lookups() - l0, 1, "the path was resolved per chunk");
+        assert_eq!(maps() - m0, 1, "the block map was rebuilt per chunk");
+
+        assert_eq!(read(handle, "/small.txt", 0, 16), b"small");
+        read(handle, "/big.bin", 8192, 4096);
+        assert_eq!(
+            (lookups() - l0, maps() - m0),
+            (3, 3),
+            "another file, then back: one more resolution and one more map each, since \
+             the cache holds one file"
+        );
+        unsafe { fs_squashfs_umount(handle) };
     }
 }
