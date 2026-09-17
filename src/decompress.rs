@@ -21,8 +21,11 @@
 //! On-disk framing notes (verified against real `mksquashfs` output):
 //!   * gzip blocks are the **zlib** stream format (NOT raw DEFLATE and NOT
 //!     the gzip file wrapper), so we decode with `Decompress::new(true)`.
-//!   * xz blocks are full `.xz` container streams — `lzma_rs::xz_decompress`
-//!     reads them directly; SquashFS does not apply BCJ filters.
+//!   * xz blocks are full `.xz` container streams. `mksquashfs -Xbcj <arch>`
+//!     puts a branch converter in front of LZMA2 in a data block's filter
+//!     chain whenever that makes the block smaller (metadata blocks are
+//!     never filtered). `lzma_rs::xz_decompress` reads a plain chain; a
+//!     filtered one goes through this crate's own xz module (#52).
 //!   * lz4 blocks are the raw LZ4 *block* format (the in-frame payload),
 //!     not the LZ4 *frame* format, and the decompressed length is known
 //!     from the SquashFS block geometry rather than a frame header.
@@ -182,6 +185,9 @@ impl std::io::Write for Capped {
 }
 
 fn decompress_xz(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
+    if crate::xz::has_filters(input) {
+        return crate::xz::decompress(input, max_out);
+    }
     let mut out = Capped::holding(max_out);
     let mut reader = BufReader::new(input);
     lzma_rs::xz_decompress(&mut reader, &mut out)
