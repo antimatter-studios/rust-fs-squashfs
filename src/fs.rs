@@ -177,6 +177,13 @@ pub struct Filesystem {
     data_cache: DataCache,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many block maps this thread has built, for the tests that pin
+    /// a chunked read to one.
+    pub(crate) static BLOCK_MAP_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Filesystem {
     /// Open a SquashFS image over a block device. Reads + validates the
     /// superblock, rejects unsupported compressors up front (every
@@ -519,6 +526,23 @@ impl Filesystem {
     /// length is corruption, and comes back as an error rather than as
     /// fewer bytes.
     pub fn read_file(&self, inode: &Inode, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        self.read_file_with_offsets(inode, &self.block_offsets(inode), offset, buf)
+    }
+
+    /// [`Filesystem::read_file`], with the file's block map already built
+    /// by [`Filesystem::block_offsets`].
+    ///
+    /// For a caller that reads one file many times: building the map is a
+    /// pass over every block size and an allocation, and a chunked reader
+    /// that rebuilt it per chunk did quadratic work in the file's block
+    /// count (#46). The C ABI keeps the map beside the inode it resolved.
+    pub(crate) fn read_file_with_offsets(
+        &self,
+        inode: &Inode,
+        block_offsets: &[u64],
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize> {
         if !inode.is_regular_file() {
             return Err(Error::BadInode("read_file on non-file"));
         }
@@ -529,17 +553,13 @@ impl Filesystem {
         let to_read = buf.len().min((size - offset) as usize);
         let bs = self.sb.block_size as u64;
 
-        // Precompute each full block's absolute on-disk start once
-        // (prefix sum of on-disk sizes) so per-block reads stay O(1).
-        let block_offsets = self.block_offsets(inode);
-
         let mut written = 0usize;
         while written < to_read {
             let abs_pos = offset + written as u64;
             let block_idx = (abs_pos / bs) as usize;
             let block_off = (abs_pos % bs) as usize;
 
-            let block = self.read_logical_block(inode, block_idx, &block_offsets)?;
+            let block = self.read_logical_block(inode, block_idx, block_offsets)?;
             let block = block.as_slice();
             if block_off >= block.len() {
                 // Nothing to copy and no progress to make. `read_logical_block`
@@ -558,8 +578,11 @@ impl Filesystem {
         Ok(written)
     }
 
-    /// Absolute on-disk start offset of each full data block.
-    fn block_offsets(&self, inode: &Inode) -> Vec<u64> {
+    /// Absolute on-disk start offset of each full data block: a prefix sum
+    /// of on-disk sizes, so per-block reads stay O(1).
+    pub(crate) fn block_offsets(&self, inode: &Inode) -> Vec<u64> {
+        #[cfg(test)]
+        BLOCK_MAP_BUILDS.with(|n| n.set(n.get() + 1));
         let mut offs = Vec::with_capacity(inode.block_sizes.len());
         // Saturating: `blocks_start` is a raw `u64` for an extended
         // file inode, so the running sum can leave a `u64` -- and in

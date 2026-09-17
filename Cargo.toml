@@ -36,7 +36,9 @@ am-lzo1x = "0.1.0"
 # proc-macro deps.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # xz codec (compression id 4). SquashFS xz blocks are full `.xz` container
-# streams, decoded via `lzma_rs::xz_decompress`. Pure-Rust, MIT.
+# streams, decoded via `lzma_rs::xz_decompress`, or -- when `mksquashfs -Xbcj`
+# put a branch converter in the chain -- the LZMA2 payload via
+# `lzma_rs::lzma2_decompress` and the converter in src/xz.rs. Pure-Rust, MIT.
 lzma-rs = "0.3"
 # lz4 codec (compression id 5). SquashFS uses the LZ4 *block* format with
 # the uncompressed size known from block geometry; decoded via
