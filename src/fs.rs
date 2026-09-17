@@ -47,6 +47,39 @@ pub const DEFAULT_CACHE_BLOCKS: usize = 32;
 /// `docs/read-path-cost.md` was taken at this value.
 pub const DEFAULT_META_CACHE_BLOCKS: usize = 256;
 
+/// Where the directory table ends.
+///
+/// The superblock names where each later table's INDEX starts, but a
+/// table's metadata blocks are stored before its index, so the nearest
+/// `_start` is past those blocks and a listing bounded by it still read
+/// through them. Each index (and the xattr id table's header) starts
+/// with a `u64` naming its table's first metadata block, which is where
+/// that table really begins; the nearest of those, and of the superblock
+/// bound, is the end. A pointer that cannot be read, or that is not past
+/// the directory table's start, is not used.
+fn directory_table_end<R: BlockRead + ?Sized>(dev: &R, sb: &Superblock) -> u64 {
+    let tables = [
+        (sb.fragment_table_start, sb.fragment_entry_count > 0),
+        (sb.export_table_start, true),
+        (sb.id_table_start, sb.id_count > 0),
+        (sb.xattr_id_table_start, true),
+    ];
+    let mut end = sb.directory_table_end();
+    for (start, has_blocks) in tables {
+        if start == table::NO_TABLE || !has_blocks {
+            continue;
+        }
+        let mut first = [0u8; 8];
+        if dev.read_at(start, &mut first).is_ok() {
+            let first = u64::from_le_bytes(first);
+            if first > sb.directory_table_start {
+                end = end.min(first);
+            }
+        }
+    }
+    end
+}
+
 pub struct Filesystem {
     dev: Arc<dyn BlockRead>,
     pub sb: Superblock,
@@ -69,6 +102,9 @@ pub struct Filesystem {
     /// for the same bytes; this stops the codec being run twice over
     /// them. Both are needed, and this is the one that moves the clock:
     /// see `docs/read-path-cost.md`.
+    /// Where the directory table ends: see [`directory_table_end`].
+    /// Worked out once, at open.
+    dir_table_end: u64,
     meta_cache: MetaCache,
 }
 
@@ -144,7 +180,9 @@ impl Filesystem {
         let fragments = table::read_fragment_table(&*dev, &sb)?;
         let xattr_ids = xattr::read_id_table(&*dev, &sb)?;
         let exports = table::read_export_table(&*dev, &sb)?;
+        let dir_table_end = directory_table_end(&*dev, &sb);
         Ok(Filesystem {
+            dir_table_end,
             dev,
             sb,
             comp,
@@ -306,7 +344,7 @@ impl Filesystem {
             Some(&self.meta_cache),
         )?
         .with_limit(
-            self.sb.directory_table_end(),
+            self.dir_table_end,
             "directory listing runs past the end of the directory table",
         );
         let buf = cur.read_exact(listing_len)?;
@@ -597,6 +635,7 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            dir_table_end: u64::MAX,
         }
     }
 
@@ -616,6 +655,7 @@ mod tests {
             xattr_ids: None,
             exports: None,
             meta_cache: MetaCache::new(DEFAULT_META_CACHE_BLOCKS),
+            dir_table_end: u64::MAX,
         }
     }
 
@@ -747,24 +787,42 @@ mod tests {
             b.extend_from_slice(&z);
             b
         };
+        // Laid out as mksquashfs lays it out: the fragment table's
+        // metadata blocks come straight after the directory table, and
+        // its index -- where `fragment_table_start` points -- after them.
+        // So the superblock's nearest `_start` is two thousand blocks
+        // past the directory table's real end.
         let dir_start = 4096u64;
         let mut img = vec![0u8; dir_start as usize];
         img.extend_from_slice(&zero_block); // the directory table
-        let next_table = img.len() as u64;
+        let fragment_blocks = img.len() as u64;
         for _ in 0..2000 {
             img.extend_from_slice(&zero_block);
         }
+        let fragment_index = img.len() as u64;
+        img.extend_from_slice(&fragment_blocks.to_le_bytes());
+        let id_index = img.len() as u64;
+        img.extend_from_slice(&fragment_blocks.to_le_bytes());
         let mut sb_bytes = synth_sb(BLOCK_LOG, 0, 96);
+        sb_bytes[0x10..0x14].copy_from_slice(&1u32.to_le_bytes()); // fragment_entry_count
         sb_bytes[0x28..0x30].copy_from_slice(&(img.len() as u64).to_le_bytes()); // bytes_used
         sb_bytes[0x48..0x50].copy_from_slice(&dir_start.to_le_bytes());
-        sb_bytes[0x50..0x58].copy_from_slice(&next_table.to_le_bytes()); // fragment_table_start
-        sb_bytes[0x30..0x38].copy_from_slice(&(next_table + 8).to_le_bytes()); // id_table_start
+        sb_bytes[0x50..0x58].copy_from_slice(&fragment_index.to_le_bytes()); // fragment_table_start
+        sb_bytes[0x30..0x38].copy_from_slice(&id_index.to_le_bytes()); // id_table_start
         for at in [0x38, 0x58] {
             sb_bytes[at..at + 8].copy_from_slice(&crate::table::NO_TABLE.to_le_bytes());
         }
+        let sb = Superblock::parse(&sb_bytes).unwrap();
+        let dev = MemDev(Mutex::new(img));
+        let dir_table_end = directory_table_end(&dev, &sb);
+        assert_eq!(
+            dir_table_end, fragment_blocks,
+            "the end is where the fragment table's blocks begin"
+        );
         let fs = Filesystem {
-            dev: Arc::new(MemDev(Mutex::new(img))),
-            sb: Superblock::parse(&sb_bytes).unwrap(),
+            dir_table_end,
+            dev: Arc::new(dev),
+            sb,
             comp: Compressor::Gzip,
             id_table: Vec::new(),
             fragments: Vec::new(),
