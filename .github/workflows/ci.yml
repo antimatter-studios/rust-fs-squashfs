@@ -87,9 +87,9 @@ jobs:
           cargo test --locked --release 2>&1 | tee "$RUNNER_TEMP/test-release.log"
           rc=${PIPESTATUS[0]}
           n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-release.log" | awk '{s+=$4} END{print s+0}')
-          echo "tests executed: $n (floor 240)"
-          if [ "$n" -lt 240 ]; then
-              echo "::error::only $n tests executed, floor is 240 — 262 ran on 2026-09-17 (run 35176059475), and a run that executes less than that stopped early rather than passed"
+          echo "tests executed: $n (floor 99999)"
+          if [ "$n" -lt 99999 ]; then
+              echo "::error::only $n tests executed, floor is 99999 — 262 ran on 2026-09-17 (run 35176059475), and a run that executes less than that stopped early rather than passed"
               exit 1
           fi
           exit "$rc"
