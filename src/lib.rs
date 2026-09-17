@@ -46,6 +46,7 @@ pub mod metablock;
 pub mod superblock;
 pub mod table;
 pub mod xattr;
+mod xz;
 
 // C ABI exports — surface defined in `include/fs_squashfs.h`.
 pub mod capi;
