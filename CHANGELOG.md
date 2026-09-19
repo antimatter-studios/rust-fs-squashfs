@@ -8,6 +8,29 @@ never does.
 
 ### Added
 
+- **The parsers are fuzzed, on two tiers.** SquashFS is read-only and
+  mounted from sources the reader did not produce — a distribution image,
+  a container layer, a firmware payload — and nothing here had a fuzz
+  target. `fuzz/` holds four `cargo-fuzz` targets and runs nightly on a
+  bounded budget; `tests/fuzz_decoders.rs` is the gate, replaying and
+  mutating the same corpus deterministically on the stable toolchain in
+  under five seconds.
+
+  The corpus is six images `mksquashfs` wrote — one per compressor this
+  crate claims to decode — plus the superblock, a decompressed directory
+  metablock and a compressed metablock cut out of each. The `image`
+  target opens and walks a mutated one, which is the only way the
+  metablock cache, the id, fragment and xattr tables and the export
+  lookup get fuzzed at all: none of them takes a byte slice.
+
+  Two of the tests are oracles rather than fuel.
+  `every_committed_image_opens_and_lists_its_root` keeps a seed from
+  quietly becoming unreadable, since a mutation of an unreadable image is
+  also unreadable. `the_corpus_decompresses_under_its_own_codec` decodes
+  each committed metablock with the compressor that produced it and
+  requires all six to be represented — so a codec this crate stopped
+  decoding fails here, on a machine with no `mksquashfs` installed (#108).
+
 - **Device nodes keep their major and minor numbers.** The parser read
   each block and character device's `rdev` and dropped it, so every
   device in an image reported 0:0. `Inode::rdev` holds the raw value
