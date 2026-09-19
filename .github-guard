@@ -49,6 +49,4 @@
 # `test-ubuntu-latest`, NOT the default `test / ubuntu-latest` job-matrix
 # spelling other repositories in the constellation use.
 [checks]
-	required = test-ubuntu-latest
-	required = test-ubuntu-24.04-arm
-	required = "validate against kernel squashfs driver"
+	required = ci-ok
