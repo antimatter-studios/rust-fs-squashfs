@@ -6,6 +6,11 @@ license = "MIT"
 description = "Pure-Rust SquashFS (read-only) filesystem driver. Clean-room implementation; reads SquashFS 4.0 images with every standard compressor (gzip, xz, lz4, zstd, lzo). Exposes a C ABI (fs_squashfs_*) suitable for FFI from C/C++/Swift/Go/etc."
 repository = "https://github.com/antimatter-studios/rust-fs-squashfs"
 
+# The fuzz crate is its own package, on its own toolchain, and is not
+# part of this one. Without this, `cargo package` and `cargo publish`
+# try to include it and fail on the nightly-only dependency.
+exclude = ["fuzz"]
+
 [lib]
 name = "fs_squashfs"
 crate-type = ["staticlib", "rlib"]
