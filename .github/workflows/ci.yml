@@ -32,6 +32,12 @@ jobs:
       # Anonymous HTTPS clone — rust-fs-core is public.
       - name: Clone sibling rust-fs-core
         run: git clone --depth 1 --branch v0.2.10 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+      - name: the agent guide carries the shared block
+        # AGENTS.md embeds agent-core, byte-identical with every sibling. This
+        # runs the script directly rather than through `chore lint`, because
+        # CI here does not install chore -- a guard wired only into a task
+        # nothing runs is a guard that reports protection it is not providing.
+        run: scripts/agents-core-check.sh
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
