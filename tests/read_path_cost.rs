@@ -33,7 +33,7 @@
 //! Needs `mksquashfs` to build the fixture, and skips without it.
 
 mod common;
-use common::{build_with_mksquashfs, dir, file, mksquashfs_available, pattern, Node};
+use common::{build_with_mksquashfs, dir, file, pattern, Node};
 
 use fs_core::{CountingDevice, FileDevice};
 use fs_squashfs::Filesystem;
@@ -179,10 +179,6 @@ fn report(what: &str, c: &Cost) {
 /// a fixture rebuild.
 #[test]
 fn what_a_read_costs_in_calls_to_the_device() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     let image = build_with_mksquashfs("gzip", &fixture_tree());
     eprintln!(
         "measuring {} ({} bytes)",

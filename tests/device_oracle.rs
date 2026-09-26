@@ -22,7 +22,7 @@
 //! in CI, where `common::tool_available` fails instead.
 
 mod common;
-use common::{dir, file, mksquashfs_available, unsquashfs_available, ImageArtifact};
+use common::{dir, file, ImageArtifact};
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -93,21 +93,15 @@ fn parse_device_lines(listing: &str) -> BTreeMap<String, (char, u32, u32)> {
     found
 }
 
-fn tools_ready() -> bool {
-    if !mksquashfs_available() || !unsquashfs_available() {
-        eprintln!("squashfs-tools not on PATH — skipping");
-        return false;
-    }
-    true
-}
+// `tools_ready()` used to live here, answering "are mksquashfs and
+// unsquashfs on PATH" so its callers could return early. The tools are in
+// the harness guest now, so the answer is always yes or the run fails
+// saying why — there is nothing left for it to report.
 
 /// `lssquashfs ls /` prints the major and minor where `ls -l` does, and
 /// they are the ones `unsquashfs -lln` reads out of the same image.
 #[test]
 fn lssquashfs_reports_the_device_numbers_unsquashfs_reads() {
-    if !tools_ready() {
-        return;
-    }
     let image = build(&["-no-xattrs"]);
     let expected = reference(&image);
     // Control: the reference saw every device the image was built with,
@@ -140,9 +134,6 @@ fn lssquashfs_reports_the_device_numbers_unsquashfs_reads() {
 /// with the raw value checked against the kernel's packing.
 #[test]
 fn the_api_and_the_c_abi_report_the_device_numbers_unsquashfs_reads() {
-    if !tools_ready() {
-        return;
-    }
     let image = build(&["-no-xattrs"]);
     let expected = reference(&image);
     check_api_and_abi(&image, &expected);

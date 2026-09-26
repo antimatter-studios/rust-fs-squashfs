@@ -39,10 +39,6 @@ fn fixture_tree() -> Node {
 /// Run the full read-back assertion suite against an image built with the
 /// given compressor.
 fn assert_reads_back(comp: &str) {
-    if !mksquashfs_available() {
-        eprintln!("skipping {comp}: mksquashfs not on PATH");
-        return;
-    }
     let art = build_with_mksquashfs(comp, &fixture_tree());
     let fs = open_image(art.bytes.clone());
 
@@ -104,44 +100,41 @@ fn assert_reads_back(comp: &str) {
     );
 
     // ---- cross-check the multi-block file against unsquashfs itself ----
-    if unsquashfs_available() {
-        let viaunsquash = unsquashfs_extract_file(&art.path, "/sub/deep/big.bin");
-        assert_eq!(
-            viaunsquash, big,
-            "[{comp}] driver vs unsquashfs disagree on big.bin"
-        );
-    }
+    //
+    // UNCONDITIONALLY. This is the only assertion in this function that is
+    // not this crate checking its own reading of its own bytes, so making
+    // it optional made the strongest check the first one to vanish.
+    let viaunsquash = unsquashfs_extract_file(&art.path, "/sub/deep/big.bin");
+    assert_eq!(
+        viaunsquash, big,
+        "[{comp}] driver vs unsquashfs disagree on big.bin"
+    );
 
     // ---- missing path surfaces an error ----
     assert!(fs.lookup_path("/nope").is_err(), "[{comp}] missing path");
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_gzip() {
     assert_reads_back("gzip");
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_xz() {
     assert_reads_back("xz");
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_lz4() {
     assert_reads_back("lz4");
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_zstd() {
     assert_reads_back("zstd");
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_lzo() {
     assert_reads_back("lzo");
 }
@@ -152,7 +145,6 @@ fn oracle_lzo() {
 /// `unsquashfs` cross-check inside `assert_reads_back` is the external
 /// oracle here.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_lzma() {
     assert_reads_back("lzma");
 }
@@ -198,12 +190,7 @@ fn host_x86_code(want: usize) -> Option<Vec<u8>> {
 /// survived: the tree listed perfectly and every file read failed with
 /// "xz decompression failed".
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn oracle_xz_bcj_x86_reads_real_machine_code() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not available -- skipping");
-        return;
-    }
     let Some(code) = host_x86_code(2 << 20) else {
         eprintln!("no x86 machine code on this host -- skipping");
         return;

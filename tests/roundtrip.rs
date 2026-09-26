@@ -19,7 +19,6 @@ use fs_core::{BlockRead, FileDevice};
 use fs_squashfs::Filesystem;
 
 mod common;
-use common::mksquashfs_available;
 
 /// Deterministic pseudo-random bytes so the large file actually spans
 /// multiple compressed blocks (not a trivial run the codec collapses).
@@ -60,10 +59,6 @@ fn open(img: &Path) -> Filesystem {
 
 #[test]
 fn roundtrip_gzip_image() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not found on PATH");
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let img = build_fixture(tmp.path());
     let fs = open(&img);

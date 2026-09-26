@@ -1,0 +1,52 @@
+# fs-linux-test-harness consumer config (see ../fs-linux-test-harness/README.md).
+#
+# EVERYTHING THAT IS LINUX HAPPENS IN HERE. The squashfs-tools oracles
+# (mksquashfs, unsquashfs, sqfstar), because the packaged build on a
+# workstation is whatever that machine has — and for this suite that is
+# not a theoretical worry, it is a failing test: Debian 12 packages
+# 4.5.1, which does not know `-xattrs-add`, so
+# `the_trusted_and_security_namespaces_are_assembled_correctly` fails on
+# such a host while passing on CI, where the runner's archive is newer.
+# The kernel oracle, which loop-mounts our images with the real in-kernel
+# SquashFS driver — today that is `sudo mount -t squashfs -o loop` in a CI
+# job, so it exists only on a Linux runner with root and a developer
+# never runs it. And, on a host that is not Linux, the suite itself
+# (`chore test:vm`).
+
+[project]
+name = "rust-fs-squashfs"
+
+[setup]
+# Runs as root INSIDE the VM; builds squashfs-tools 4.6.1 from source with
+# every compressor the format allows, installs attr and acl, loads the
+# loop and squashfs drivers, and installs the toolchain the in-guest suite
+# builds with.
+script = "scripts/vm-setup.sh"
+
+[test]
+# Runs INSIDE the guest, from /repo (this repository, mounted there).
+guest_command = "scripts/guest-suite.sh"
+
+[share]
+dir = ".vm-share"
+
+[vm]
+# FOUR HOURS on the deadline. The guest's own poweroff does not care what
+# is using it — a VM pulled out from under a running suite leaves every
+# call it was serving with nothing to answer — so the deadline has to
+# outlast a run rather than merely bound an idle VM. This suite is smaller
+# than ext4's, but the in-guest build is the slow part and the host may be
+# loaded.
+#
+# 12G of disk: squashfs-tools is built from source in here and the
+# in-guest suite keeps its own cargo target directory, and neither is
+# large.
+#
+# ssh_port is this repository's own — one number per consumer, so two
+# checkouts on one machine do not forward the same host port. Taken:
+# 50122, 50124, 50126, 50128 by the siblings.
+memory = "4G"
+cpus = 4
+disk = "12G"
+ssh_port = 50130
+deadline_minutes = 240

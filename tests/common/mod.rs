@@ -12,11 +12,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use fs_core::{BlockDevice, BlockRead};
 use fs_squashfs::Filesystem;
+// The ONLY way to a squashfs-tools oracle or to the kernel: both live in
+// the fs-linux-test-harness guest, and this crate fails rather than skips
+// when they cannot be reached.
+use fs_squashfs_test_support::{oracle, ScratchDir};
 
 /// In-memory `BlockRead` impl backed by a `Vec<u8>`. Owned via
 /// `Mutex<Vec<u8>>` so the device is `Send + Sync`.
@@ -143,46 +146,24 @@ fn materialize(path: &Path, node: &Node) {
 
 // ---- squashfs-tools oracle plumbing ------------------------------------
 
-/// True if `tool` is on `PATH` and runnable.
-///
-/// A MISSING TOOL IS A SKIP ON A LAPTOP AND A FAILURE IN CI.
-///
-/// Every oracle here returns early and prints a line when the reference
-/// tools are absent, which is right on a machine that has no
-/// squashfs-tools: the driver's own tests still run. It is exactly
-/// wrong in CI, where the workflow installs squashfs-tools precisely so
-/// these can run. There, an absent tool means the install step changed
-/// or broke -- and the whole cross-validation suite would go green
-/// having compared this driver against nothing at all.
-///
-/// The failure that hides is the expensive one: the oracles are what
-/// say this driver reads what the reference writer wrote, so a silent
-/// skip removes the only check that is not this repository marking its
-/// own homework.
-fn tool_available(tool: &str) -> bool {
-    let found = Command::new(tool)
-        .arg("-version")
-        .output()
-        .map(|o| o.status.success() || !o.stdout.is_empty())
-        .unwrap_or(false);
-    assert!(
-        found || std::env::var_os("CI").is_none(),
-        "{tool} is not on PATH, and CI is set. The workflow installs squashfs-tools so the \
-         oracles can run; without it they would skip and the suite would pass having \
-         compared this driver against nothing."
-    );
-    found
-}
-
-/// True if `mksquashfs` is on `PATH` and runnable.
-pub fn mksquashfs_available() -> bool {
-    tool_available("mksquashfs")
-}
-
-/// True if `unsquashfs` is on `PATH` and runnable.
-pub fn unsquashfs_available() -> bool {
-    tool_available("unsquashfs")
-}
+// THERE IS NO `tool_available`, AND THAT IS THE CHANGE.
+//
+// This module used to carry one, plus `mksquashfs_available` and
+// `unsquashfs_available`, so that every oracle test could return early and
+// print a line when squashfs-tools was absent. Its own doc comment
+// described the problem exactly — "a silent skip removes the only check
+// that is not this repository marking its own homework" — and then tried
+// to solve it by asserting when `CI` was set, which only moved the silence
+// to every machine that is not CI.
+//
+// The tools now live in the fs-linux-test-harness guest, built from a
+// pinned source at a known version, so "absent" is not a state a test has
+// to cope with: `fs_squashfs_test_support::oracle` boots the VM if it has
+// to and FAILS, naming what to run, if it cannot. There is nothing left to
+// probe for and nothing left to skip.
+//
+// tests/test_contract.rs refuses any test that reaches a tool another way,
+// so this cannot come back by accident.
 
 /// Build a SquashFS image with `mksquashfs -comp <comp>` from a `Node`
 /// tree. Returns the rendered image bytes alongside the tempdir keeping
@@ -199,18 +180,24 @@ pub fn build_with_mksquashfs(comp: &str, tree: &Node) -> ImageArtifact {
 /// make. A test about a feature that is switched on or off at build time
 /// needs to say so itself, and `extra` is where.
 pub fn build_with_mksquashfs_args(comp: &str, tree: &Node, extra: &[&str]) -> ImageArtifact {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let src = dir.path().join("src");
-    let img = dir.path().join("out.sqfs");
+    // ScratchDir, NOT tempfile::tempdir(). The tool runs in the harness
+    // guest, which sees this repository at the path the host knows it by
+    // and nothing else of the host — so a source tree under the system
+    // temporary directory is a path mksquashfs cannot open.
+    let dir = ScratchDir::new("mksquashfs");
+    let src = dir.join("src");
+    let img = dir.join("out.sqfs");
     materialize(&src, tree);
 
-    let out = Command::new("mksquashfs")
+    // ARGUMENT ORDER: mksquashfs takes SOURCE then DEST, the reverse of the
+    // sibling drivers' formatters. The wrong way round is not an error —
+    // it would treat the image path as another source.
+    let out = oracle("mksquashfs")
         .arg(&src)
         .arg(&img)
         .args(["-comp", comp, "-noappend", "-no-progress"])
         .args(extra)
-        .output()
-        .expect("spawn mksquashfs");
+        .output();
     if !out.status.success() {
         panic!(
             "mksquashfs -comp {comp} {extra:?} failed: code={:?}\nstderr: {}\nstdout: {}",
@@ -230,16 +217,17 @@ pub fn build_with_mksquashfs_args(comp: &str, tree: &Node, extra: &[&str]) -> Im
 /// Extract a single file from a SquashFS image via `unsquashfs` and return
 /// its bytes -- a cross-check oracle independent of the Rust driver.
 pub fn unsquashfs_extract_file(image: &Path, inner_path: &str) -> Vec<u8> {
-    let dest = tempfile::tempdir().expect("tempdir");
+    // In the repository, not the system temporary directory: unsquashfs
+    // writes what it extracts, and it writes it in the guest.
+    let dest = ScratchDir::new("unsquashfs");
     // `unsquashfs -d <dest> -no-xattrs <image> <inner_path>` extracts just
     // that path under <dest>. The leading slash is dropped by unsquashfs.
-    let out = Command::new("unsquashfs")
+    let out = oracle("unsquashfs")
         .args(["-f", "-no-xattrs", "-d"])
         .arg(dest.path())
         .arg(image)
         .arg(inner_path.trim_start_matches('/'))
-        .output()
-        .expect("spawn unsquashfs");
+        .output();
     assert!(
         out.status.success(),
         "unsquashfs failed: {}",
@@ -254,7 +242,7 @@ pub fn unsquashfs_extract_file(image: &Path, inner_path: &str) -> Vec<u8> {
 pub struct ImageArtifact {
     pub bytes: Vec<u8>,
     pub path: PathBuf,
-    _guard: tempfile::TempDir,
+    _guard: ScratchDir,
 }
 
 /// Read an entire regular file out of the driver, by path, into a `Vec`.

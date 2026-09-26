@@ -68,13 +68,8 @@ fn committed_big_bin_read_crossing_block_into_fragment() {
 // ===========================================================================
 
 /// Build a single-file image of `size` bytes (LCG pattern) with the given
-/// compressor and read it all back + spot-check offsets. Returns early
-/// (skips) when `mksquashfs` isn't installed.
+/// compressor and read it all back + spot-check offsets.
 fn assert_large_file_round_trip(comp: &str, size: usize) {
-    if !mksquashfs_available() {
-        eprintln!("skipping {comp}/{size}: mksquashfs not on PATH");
-        return;
-    }
     let tree = dir(vec![("big.bin", file(&pattern(size)))]);
     let art = build_with_mksquashfs(comp, &tree);
     let fs = open_image(art.bytes.clone());
@@ -99,15 +94,15 @@ fn assert_large_file_round_trip(comp: &str, size: usize) {
         assert_eq!(buf, &want[off..off + len], "[{comp}] content at {off}");
     }
 
-    // Strict cross-check against unsquashfs itself.
-    if unsquashfs_available() {
-        let via_oracle = unsquashfs_extract_file(&art.path, "/big.bin");
-        assert_eq!(via_oracle, got, "[{comp}] driver vs unsquashfs");
-    }
+    // Strict cross-check against unsquashfs itself, UNCONDITIONALLY. This
+    // is the only assertion here that is not this crate checking its own
+    // reading of its own bytes, so making it optional made the strongest
+    // check the first one to disappear.
+    let via_oracle = unsquashfs_extract_file(&art.path, "/big.bin");
+    assert_eq!(via_oracle, got, "[{comp}] driver vs unsquashfs");
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn large_file_300k_gzip() {
     // ~2.3 blocks at the default 128 KiB block size: multiple full blocks
     // plus a tail fragment.
@@ -115,13 +110,11 @@ fn large_file_300k_gzip() {
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn large_file_1m_gzip() {
     assert_large_file_round_trip("gzip", 1024 * 1024);
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn large_file_block_aligned_gzip() {
     // Exactly two full 128 KiB blocks, no tail fragment — the file ends on
     // a block boundary so there is no fragment at all.
@@ -129,14 +122,12 @@ fn large_file_block_aligned_gzip() {
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn large_file_one_byte_over_block_gzip() {
     // One byte past a single full block: forces a 1-byte tail fragment.
     assert_large_file_round_trip("gzip", 128 * 1024 + 1);
 }
 
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn large_file_across_all_compressors() {
     // 500 KiB spans several full blocks + a tail across every codec, so
     // the multi-block read path is proven against real output from each.
@@ -149,12 +140,7 @@ fn large_file_across_all_compressors() {
 /// driver tracks each file's own block list + fragment independently when
 /// many files share a fragment block.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn mixed_block_and_fragment_files_gzip() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not on PATH");
-        return;
-    }
     let bs = 128 * 1024;
     let sizes: &[(&str, usize)] = &[
         ("tiny", 5),                 // pure fragment

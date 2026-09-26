@@ -244,12 +244,7 @@ fn the_unpatched_fixture_still_opens() {
 /// Many files in one directory: proves directory listings that span
 /// multiple metadata blocks parse and every entry resolves.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn many_files_in_one_directory_gzip() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not on PATH");
-        return;
-    }
     let n = 1000;
     let mut entries = Vec::with_capacity(n);
     let names: Vec<String> = (0..n).map(|i| format!("file_{i:04}")).collect();
@@ -272,12 +267,7 @@ fn many_files_in_one_directory_gzip() {
 
 /// A deep directory chain: proves path traversal recurses arbitrarily.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn deep_directory_chain_gzip() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not on PATH");
-        return;
-    }
     // Build /d0/d1/.../d19/leaf.txt nested 20 deep.
     const DEPTH: usize = 20;
     let mut node = dir(vec![("leaf.txt", file(b"bottom\n"))]);
@@ -300,12 +290,7 @@ fn deep_directory_chain_gzip() {
 
 /// Max-length (255-byte) and unicode filenames round-trip.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn long_and_unicode_names_gzip() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not on PATH");
-        return;
-    }
     let long_name = "x".repeat(255);
     let tree = dir(vec![
         (long_name.as_str(), file(b"long\n")),
@@ -325,12 +310,7 @@ fn long_and_unicode_names_gzip() {
 
 /// Empty files and empty directories survive a round-trip.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn empty_files_and_dirs_gzip() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not on PATH");
-        return;
-    }
     let tree = dir(vec![
         ("zero.bin", file(b"")),
         ("empty_dir", dir(vec![])),
@@ -357,12 +337,7 @@ fn empty_files_and_dirs_gzip() {
 /// back and confirm the bytes match. Proves the stress shape decodes from
 /// every codec's real `mksquashfs` output.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn varied_tree_all_compressors() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not on PATH");
-        return;
-    }
     // (path, contents) pairs the tree below contains.
     let mut expected: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     expected.insert("/a.txt".into(), b"alpha\n".to_vec());
@@ -573,12 +548,7 @@ fn an_id_index_past_the_table_is_refused_rather_than_answered_as_root() {
 /// an empty root, and each compressor. The checks are only right if the
 /// reference writer's own output satisfies them.
 #[test]
-#[ignore = "requires squashfs-tools (mksquashfs); run with -- --ignored"]
 fn every_table_layout_mksquashfs_writes_passes_the_superblock_checks() {
-    if !mksquashfs_available() {
-        eprintln!("skipping: mksquashfs not on PATH");
-        return;
-    }
     let full = dir(vec![
         ("small.txt", file(b"tail\n")),
         ("big.bin", file(&pattern(70_000))),

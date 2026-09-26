@@ -26,7 +26,7 @@
 //! skips without them.
 
 mod common;
-use common::{mksquashfs_available, open_image_path, unsquashfs_available};
+use common::open_image_path;
 
 use fs_squashfs::Filesystem;
 use std::collections::BTreeMap;
@@ -282,14 +282,6 @@ fn ours(fs: &Filesystem, path: &str) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-fn tools_ready() -> bool {
-    if !mksquashfs_available() || !unsquashfs_available() {
-        eprintln!("squashfs-tools not on PATH — skipping");
-        return false;
-    }
-    true
-}
-
 /// The round trip: build an image with attributes, extract it with
 /// `unsquashfs -x`, and require this driver to report exactly what the
 /// operating system reads off the extracted files.
@@ -298,9 +290,6 @@ fn tools_ready() -> bool {
 /// available: nothing in the comparison came from this repository.
 #[test]
 fn what_unsquashfs_restores_is_what_this_driver_reports() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute on this machine — skipping");
         return;
@@ -353,9 +342,6 @@ fn what_unsquashfs_restores_is_what_this_driver_reports() {
 /// another. Both must come back, and identically.
 #[test]
 fn two_files_sharing_a_set_both_read_it() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping");
         return;
@@ -376,9 +362,6 @@ fn two_files_sharing_a_set_both_read_it() {
 /// not depend on which set asked.
 #[test]
 fn an_out_of_line_value_reads_in_full_from_either_set() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping");
         return;
@@ -407,9 +390,6 @@ fn an_out_of_line_value_reads_in_full_from_either_set() {
 /// `security.` attribute reported as `user.` is not a cosmetic error.
 #[test]
 fn the_trusted_and_security_namespaces_are_assembled_correctly() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping");
         return;
@@ -454,9 +434,6 @@ fn the_trusted_and_security_namespaces_are_assembled_correctly() {
 /// "could not look".
 #[test]
 fn absence_is_an_empty_list_and_not_a_failure() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping");
         return;
@@ -480,9 +457,6 @@ fn absence_is_an_empty_list_and_not_a_failure() {
 /// implemented over the other and a caller may use either.
 #[test]
 fn getting_one_attribute_agrees_with_listing_them_all() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping");
         return;
@@ -542,9 +516,6 @@ fn mount(img: &Path) -> *mut fs_squashfs_fs_t {
 /// number, so the two must agree exactly.
 #[test]
 fn the_c_listxattr_probe_agrees_with_the_real_call() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping");
         return;
@@ -598,9 +569,6 @@ fn the_c_listxattr_probe_agrees_with_the_real_call() {
 /// writing.
 #[test]
 fn the_c_getxattr_returns_the_value_and_its_length() {
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping");
         return;
@@ -679,9 +647,6 @@ fn the_c_xattr_entry_points_tolerate_nulls() {
         -1
     );
 
-    if !tools_ready() {
-        return;
-    }
     let Some(fx) = Fixture::build() else {
         eprintln!("no way to set an extended attribute — skipping the rest");
         return;
