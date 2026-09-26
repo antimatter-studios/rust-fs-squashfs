@@ -64,10 +64,21 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-unit-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: chore tools
-        # python3, PyYAML and a C compiler. NOT squashfs-tools: this job
-        # exists to prove the unit tier needs none of it.
-        run: chore tools
+      # NO `chore tools` STEP, AND THAT IS NOT AN OMISSION.
+      #
+      # `scripts/tools.sh` in install mode also checks the VM HOST through the
+      # harness's host-tools.sh — qemu and read-write /dev/kvm — because that
+      # is what a developer running `chore tools` wants to know. This runner
+      # has no /dev/kvm and is not meant to, so the step failed here while the
+      # jobs that actually use a VM passed:
+      #
+      #   missing: read-write access to /dev/kvm
+      #   chore: tools: exit status 1
+      #
+      # The tiers that need the host's own tools call `scripts/tools.sh
+      # --check` themselves, and `--check` leaves the VM out for exactly this
+      # reason. The unit tier needs a C compiler for the header-layout test,
+      # and that test fails naming `chore tools` if one is absent.
       - name: chore test:unit
         run: chore test:unit
       - name: Keep the tier logs
@@ -174,8 +185,9 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: chore tools
-        run: chore tools
+      # No `chore tools` here either: GitHub's arm64 runners have no
+      # /dev/kvm, and install-mode tools.sh checks for it. See the unit job.
+      #
       # NO VM ON THIS RUNNER, so only the tiers that need none. This is
       # the architecture the crate ships on, and before the tiers existed
       # it ran nothing here that read an image at all.
