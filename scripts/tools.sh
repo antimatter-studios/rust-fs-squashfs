@@ -44,7 +44,15 @@ MODE=install
 [ "${1:-}" = "--check" ] && MODE=check
 
 # tool:debian-package:homebrew-formula
-TOOLS="python3:python3:python3"
+#
+# cc IS HERE BECAUSE tests/c_header_layout.rs COMPILES C. That test builds a
+# file of `_Static_assert`s from the Rust layout and requires the C compiler
+# to agree, which is the only thing that can catch include/fs_squashfs.h
+# drifting from the ABI the library actually exposes. It used to print
+# "no C compiler — skipping" and pass, with an assertion that only fired when
+# CI was set — so on every developer machine without cc the header went
+# unchecked and nothing said so.
+TOOLS="python3:python3:python3 cc:gcc:gcc"
 
 # import:debian-package:pip-name — a Python module, checked by importing it.
 MODULES="yaml:python3-yaml:PyYAML"
@@ -112,6 +120,10 @@ fi
 
 printf '  %-9s %s\n' python3 "$(command -v python3)"
 printf '  %-9s %s\n' PyYAML "$(python3 -c 'import yaml; print(yaml.__version__)')"
+# The compiler is REPORTED, not merely found: which one it is decides whether
+# the header's layout assertions mean anything, and `cc` is a symlink whose
+# target differs per distribution. One line, and its first line only.
+printf '  %-9s %s\n' "${CC:-cc}" "$("${CC:-cc}" --version 2>&1 | sed -n 1p)"
 echo "tools: the oracle tools live in the harness VM (scripts/vm-setup.sh), not here."
 
 [ "$MODE" = check ] && exit 0

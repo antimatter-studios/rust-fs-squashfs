@@ -26,7 +26,7 @@ mod common;
 use common::{dir, file, symlink, ImageArtifact, Node};
 
 use fs_squashfs::Filesystem;
-use std::process::Command;
+use fs_squashfs_test_support::oracle;
 
 /// A tree with one of everything the export table has to cover: several
 /// directories, several files, and a symlink — the inode types are
@@ -283,12 +283,12 @@ fn the_c_surface_resolves_a_number_the_same_way() {
 fn the_inode_count_the_table_is_sized_from_is_the_one_unsquashfs_counts() {
     let image = build(&[]);
     let fs = common::open_image_path(&image.path);
-    let out = Command::new("unsquashfs")
-        .args(["-s"])
-        .arg(&image.path)
-        .output()
-        .expect("spawn unsquashfs");
-    assert!(out.status.success());
+    let out = oracle("unsquashfs").args(["-s"]).arg(&image.path).output();
+    assert!(
+        out.status.success(),
+        "unsquashfs -s failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = String::from_utf8_lossy(&out.stdout);
     let reported: u32 = text
         .lines()

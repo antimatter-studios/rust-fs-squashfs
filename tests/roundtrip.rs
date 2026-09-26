@@ -12,11 +12,11 @@
 //! green having compared the driver against nothing (#44).
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 use fs_core::{BlockRead, FileDevice};
 use fs_squashfs::Filesystem;
+use fs_squashfs_test_support::{oracle, ScratchDir};
 
 mod common;
 
@@ -42,13 +42,18 @@ fn build_fixture(root: &Path) -> std::path::PathBuf {
     std::os::unix::fs::symlink("hello.txt", src.join("link")).unwrap();
 
     let img = root.join("out.sqfs");
-    let status = Command::new("mksquashfs")
+    // In the guest, through the support crate: mksquashfs is not on the
+    // host at a version anyone agreed on. SOURCE then DEST.
+    let out = oracle("mksquashfs")
         .arg(&src)
         .arg(&img)
         .args(["-comp", "gzip", "-noappend", "-no-progress"])
-        .status()
-        .expect("spawn mksquashfs");
-    assert!(status.success(), "mksquashfs failed");
+        .output();
+    assert!(
+        out.status.success(),
+        "mksquashfs failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     img
 }
 
@@ -59,7 +64,7 @@ fn open(img: &Path) -> Filesystem {
 
 #[test]
 fn roundtrip_gzip_image() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = ScratchDir::new("roundtrip");
     let img = build_fixture(tmp.path());
     let fs = open(&img);
 

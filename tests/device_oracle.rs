@@ -24,8 +24,8 @@
 mod common;
 use common::{dir, file, ImageArtifact};
 
+use fs_squashfs_test_support::oracle;
 use std::collections::BTreeMap;
-use std::process::Command;
 
 /// `(name, kind, major, minor)` for each device the image carries.
 const DEVICES: &[(&str, char, u32, u32)] = &[
@@ -47,11 +47,7 @@ fn build(extra: &[&str]) -> ImageArtifact {
 
 /// `name -> (kind, major, minor)` as `unsquashfs -lln` reports it.
 fn reference(image: &ImageArtifact) -> BTreeMap<String, (char, u32, u32)> {
-    let out = Command::new("unsquashfs")
-        .arg("-lln")
-        .arg(&image.path)
-        .output()
-        .expect("spawn unsquashfs");
+    let out = oracle("unsquashfs").arg("-lln").arg(&image.path).output();
     assert!(
         out.status.success(),
         "unsquashfs -lln failed: {}",

@@ -1028,29 +1028,48 @@ mod buffer_capacity_tests {
     }
 }
 
+// `needs_host`, AND THE NAME IS LOAD-BEARING.
+//
+// Everything else in this file is a unit test: no tool, no fixture, no VM.
+// This module needs `mksquashfs`, which lives in the fs-linux-test-harness
+// guest, so it cannot run on the `unit` tier — that tier's whole point is
+// that it runs on a machine with no VM at all (GitHub's arm64 runners have
+// no /dev/kvm).
+//
+// `scripts/test-targets.sh unit` passes `-- --skip needs_host::`, so this
+// module is excluded there and included by the `all` selection, which is
+// what `chore test:native`'s whole-suite tier and the in-guest suite run.
+// Renaming it silently moves it back onto the no-VM job, where it would
+// fail; tests/test_contract.rs is what refuses the other way of getting
+// here, which is spawning the tool directly.
 #[cfg(test)]
-mod chunked_read_tests {
+mod needs_host {
     use super::*;
-    use std::process::Command;
 
     /// An image of two files, the larger one of many 4 KiB blocks, or
     /// `None` without `mksquashfs`.
-    fn image(dir: &std::path::Path, big: &[u8]) -> Option<std::path::PathBuf> {
+    /// NOT `Option`. A missing tool used to make this return `None` and the
+    /// test print "no mksquashfs -- skipping" and pass, which is the silence
+    /// the harness removes: the tool is in the guest, and `oracle` fails
+    /// naming what to run when it cannot be reached.
+    fn image(dir: &std::path::Path, big: &[u8]) -> std::path::PathBuf {
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("big.bin"), big).unwrap();
         std::fs::write(src.join("small.txt"), b"small").unwrap();
         let img = dir.join("img.sqfs");
-        let out = Command::new("mksquashfs")
+        // SOURCE then DEST, and in the guest.
+        let out = fs_squashfs_test_support::oracle("mksquashfs")
             .arg(&src)
             .arg(&img)
             .args(["-b", "4096", "-noappend", "-no-progress", "-no-xattrs"])
             .output();
-        match out {
-            Ok(out) if out.status.success() => Some(img),
-            Ok(out) => panic!("mksquashfs: {}", String::from_utf8_lossy(&out.stderr)),
-            Err(_) => None,
-        }
+        assert!(
+            out.status.success(),
+            "mksquashfs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        img
     }
 
     fn read(handle: *mut fs_squashfs_fs_t, path: &str, offset: u64, len: usize) -> Vec<u8> {
@@ -1080,14 +1099,13 @@ mod chunked_read_tests {
     /// cost one more, so the caches are what change the count.
     #[test]
     fn a_chunked_read_resolves_the_path_and_builds_the_block_map_once() {
-        let dir = tempfile::tempdir().unwrap();
+        // ScratchDir, not tempfile: the guest sees this repository and
+        // nothing else of the host.
+        let dir = fs_squashfs_test_support::ScratchDir::new("capi-chunked");
         let big: Vec<u8> = (0..512 * 4096u32)
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
             .collect();
-        let Some(img) = image(dir.path(), &big) else {
-            eprintln!("no mksquashfs -- skipping");
-            return;
-        };
+        let img = image(dir.path(), &big);
         let c_img = CString::new(img.to_str().unwrap()).unwrap();
         let handle = unsafe { fs_squashfs_mount(c_img.as_ptr()) };
         assert!(!handle.is_null(), "mount");

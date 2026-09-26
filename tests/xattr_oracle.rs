@@ -31,7 +31,6 @@ use common::open_image_path;
 use fs_squashfs::Filesystem;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// A value long enough that `mksquashfs` stores it out of line rather
 /// than inline. Measured against 4.7.5: 300 bytes goes out of line, a
@@ -43,224 +42,76 @@ fn long_value() -> Vec<u8> {
     b"y".repeat(LONG_VALUE_LEN)
 }
 
-/// How to set an extended attribute on a file, on this machine.
-///
-/// `setfattr` on Linux and `xattr` on macOS take different arguments and
-/// neither exists on both, so the test finds one and remembers which.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Setter {
-    SetFattr,
-    MacXattr,
-}
+// THE `Setter` ENUM IS GONE, AND SO IS EVERYTHING IT NEGOTIATED.
+//
+// It existed to answer three host questions: is this Linux or macOS, is
+// `setfattr` (or `xattr`) installed, and does setting a `user.*` attribute
+// actually work in this TMPDIR — a filesystem, a mount option or a sandbox
+// could all say no. Each answer could be "no", and "no" meant nine tests
+// skipped and a suite that passed having compared nothing (#80), which is
+// why it had grown an assertion to turn the skip into a failure under CI
+// and nowhere else.
+//
+// The staging now happens INSIDE the harness guest, so all three questions
+// have one answer and it is not in doubt: it is Linux, `scripts/vm-setup.sh`
+// installs `attr`, and the guest's own disk carries extended attributes. A
+// thing that cannot vary does not need detecting, and nothing here can skip.
+//
+// It also removes a question this file should never have been asked. The
+// repository reaches the guest as a 9p mount, so whether a `user.*`
+// attribute set on one side is visible on the other is a property of the
+// host's filesystem and of the transport — not of SquashFS. Staging on the
+// guest's own disk is the only place where `setfattr` means what it says.
 
-impl Setter {
-    /// The setter that works here, or `None` -- which every test turns
-    /// into a skip.
-    ///
-    /// A SKIP ON A LAPTOP AND A FAILURE IN CI, the rule
-    /// `common::tool_available` already applies to squashfs-tools. This
-    /// is a second gate on a different question: not "is `setfattr`
-    /// installed" but "does setting an attribute work in this TMPDIR".
-    /// A `user.*` attribute can fail on a filesystem that does not carry
-    /// them, a mount option, or a sandbox, and `setfattr --version` in
-    /// the workflow sees none of those. Without the assertion all nine
-    /// tests skip and the suite passes having compared nothing (#80).
-    ///
-    /// The tempdir and probe-file failures are on the same side of the
-    /// assertion: they also used to return `None` silently.
-    fn detect() -> Option<Setter> {
-        let mut failures: Vec<String> = Vec::new();
-        let chosen = match tempfile::tempdir() {
-            Err(e) => {
-                failures.push(format!("creating a tempdir: {e}"));
-                None
-            }
-            Ok(dir) => {
-                let probe = dir.path().join("probe");
-                match std::fs::write(&probe, b"x") {
-                    Err(e) => {
-                        failures.push(format!("writing {}: {e}", probe.display()));
-                        None
-                    }
-                    Ok(()) => [Setter::SetFattr, Setter::MacXattr].into_iter().find(|s| {
-                        match s.set(&probe, "user.probe", b"x") {
-                            Ok(()) => true,
-                            Err(e) => {
-                                failures.push(format!("{s:?}: {}", e.trim()));
-                                false
-                            }
-                        }
-                    }),
-                }
-            }
-        };
-        assert!(
-            chosen.is_some() || std::env::var_os("CI").is_none(),
-            "no way to set an extended attribute, and CI is set. ci.yml installs `attr` so \
-             the xattr oracles can run; without a working setter all nine tests would skip \
-             and the suite would pass having compared this driver against nothing. \
-             What failed: {failures:?}"
-        );
-        chosen
-    }
-
-    fn set(self, path: &Path, name: &str, value: &[u8]) -> Result<(), String> {
-        let value = String::from_utf8(value.to_vec()).expect("test values are text");
-        let out = match self {
-            Setter::SetFattr => Command::new("setfattr")
-                .args(["-n", name, "-v", &value])
-                .arg(path)
-                .output(),
-            Setter::MacXattr => Command::new("xattr")
-                .args(["-w", name, &value])
-                .arg(path)
-                .output(),
-        };
-        match out {
-            Ok(o) if o.status.success() => Ok(()),
-            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).into_owned()),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// Every attribute on a path, as the operating system reports it.
-    ///
-    /// `com.apple.*` names are dropped: macOS adds `com.apple.provenance`
-    /// to files it writes, so it appears on an extracted file without
-    /// ever having been in the image.
-    fn list(self, path: &Path) -> BTreeMap<String, Vec<u8>> {
-        let mut out = BTreeMap::new();
-        let names = match self {
-            Setter::SetFattr => {
-                let o = Command::new("getfattr")
-                    .args(["--absolute-names", "-d", "-m", "-"])
-                    .arg(path)
-                    .output()
-                    .expect("spawn getfattr");
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-                    .filter_map(|l| l.split_once('=').map(|(n, _)| n.to_string()))
-                    .collect::<Vec<_>>()
-            }
-            Setter::MacXattr => {
-                let o = Command::new("xattr")
-                    .arg(path)
-                    .output()
-                    .expect("spawn xattr");
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty())
-                    .collect::<Vec<_>>()
-            }
-        };
-        for name in names {
-            if name.starts_with("com.apple.") {
-                continue;
-            }
-            let value = match self {
-                Setter::SetFattr => {
-                    let o = Command::new("getfattr")
-                        .args(["--absolute-names", "--only-values", "-n", &name])
-                        .arg(path)
-                        .output()
-                        .expect("spawn getfattr");
-                    o.stdout
-                }
-                Setter::MacXattr => {
-                    let o = Command::new("xattr")
-                        .args(["-p", &name])
-                        .arg(path)
-                        .output()
-                        .expect("spawn xattr");
-                    // `xattr -p` prints the value with a trailing newline
-                    // it did not read from the file.
-                    let mut v = o.stdout;
-                    if v.last() == Some(&b'\n') {
-                        v.pop();
-                    }
-                    v
-                }
-            };
-            out.insert(name, value);
-        }
-        out
-    }
-}
-
-/// The source tree every image below is built from.
-///
-/// The shapes are chosen so a failure cannot hide:
-///
-/// - `two.txt` carries two attributes, so the walk over a set has to
-///   advance correctly from the first record to the second;
-/// - `shared-a.txt` and `shared-b.txt` carry the *same* attribute, which
-///   is what makes them share one id-table entry — the indirection the
-///   format exists for;
-/// - `big.txt` carries a value long enough to be stored out of line,
-///   which is a different code path from an inline one;
-/// - `big-too.txt` carries the same long value, so the out-of-line
-///   record is referenced from two sets and reading it must not depend
-///   on which one asked;
-/// - `bare.txt` carries none, so an empty list is distinguished from a
-///   failure to look;
-/// - `sub/` is a directory with an attribute, since directories carry
-///   them and nothing else here would show it.
 struct Fixture {
-    dir: tempfile::TempDir,
-    setter: Setter,
+    dir: ScratchDir,
 }
+
+/// The tree, built in the guest. `$SRC` is an empty directory and the
+/// working directory; everything below is the guest's own disk, so
+/// `setfattr` is simply `setfattr`.
+///
+/// Kept as one script rather than a call per attribute: it is one guest
+/// round trip instead of eight, and the tree and its attributes are a
+/// single fact about the fixture rather than a sequence that could half
+/// happen.
+const STAGE: &str = r#"
+mkdir -p sub
+for n in two.txt shared-a.txt shared-b.txt big.txt big-too.txt bare.txt sub/inner.txt; do
+    printf 'contents of %s\n' "$n" > "$n"
+done
+long="$(printf 'y%.0s' $(seq 300))"
+setfattr -n user.colour -v blue     two.txt
+setfattr -n user.tag    -v alpha    two.txt
+setfattr -n user.label  -v same     shared-a.txt
+setfattr -n user.label  -v same     shared-b.txt
+setfattr -n user.big    -v "$long"  big.txt
+setfattr -n user.big    -v "$long"  big-too.txt
+setfattr -n user.on-dir -v yes      sub
+"#;
 
 impl Fixture {
-    fn build() -> Option<Fixture> {
-        let setter = Setter::detect()?;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let src = dir.path().join("src");
-        std::fs::create_dir_all(src.join("sub")).expect("create tree");
-        for name in [
-            "two.txt",
-            "shared-a.txt",
-            "shared-b.txt",
-            "big.txt",
-            "big-too.txt",
-            "bare.txt",
-            "sub/inner.txt",
-        ] {
-            std::fs::write(src.join(name), format!("contents of {name}\n")).expect("write");
+    /// NOT `Option`. There is nothing left to detect, so there is no way
+    /// for this to decline — a guest that cannot set an attribute fails the
+    /// provision in scripts/vm-setup.sh, naming itself.
+    fn build() -> Fixture {
+        Fixture {
+            dir: ScratchDir::new("xattr"),
         }
-        let long = String::from_utf8(long_value()).unwrap();
-        for (path, name, value) in [
-            ("two.txt", "user.colour", "blue"),
-            ("two.txt", "user.tag", "alpha"),
-            ("shared-a.txt", "user.label", "same"),
-            ("shared-b.txt", "user.label", "same"),
-            ("big.txt", "user.big", long.as_str()),
-            ("big-too.txt", "user.big", long.as_str()),
-            ("sub", "user.on-dir", "yes"),
-        ] {
-            setter
-                .set(&src.join(path), name, value.as_bytes())
-                .unwrap_or_else(|e| panic!("setting {name} on {path}: {e}"));
-        }
-        Some(Fixture { dir, setter })
     }
 
-    fn src(&self) -> PathBuf {
-        self.dir.path().join("src")
-    }
-
-    /// Build an image from the tree with the given extra arguments.
+    /// Build an image from the staged tree with the given extra arguments.
+    ///
+    /// The image lands inside the repository, because the HOST opens it with
+    /// this crate's reader; the tree it is built from never leaves the guest.
     fn image(&self, label: &str, extra: &[&str]) -> PathBuf {
-        let img = self.dir.path().join(format!("{label}.sqfs"));
+        let img = self.dir.join(&format!("{label}.sqfs"));
         let _ = std::fs::remove_file(&img);
-        let out = Command::new("mksquashfs")
-            .arg(self.src())
-            .arg(&img)
-            .args(["-comp", "gzip", "-noappend", "-no-progress"])
-            .args(extra)
-            .output()
-            .expect("spawn mksquashfs");
+        let out = mksquashfs_from_guest_tree(
+            &img,
+            STAGE,
+            &[&["-comp", "gzip", "-noappend", "-no-progress"], extra].concat(),
+        );
         assert!(
             out.status.success(),
             "mksquashfs {extra:?} failed: {}",
@@ -268,6 +119,63 @@ impl Fixture {
         );
         img
     }
+}
+
+/// Every extended attribute the GUEST'S OWN TOOLS see, for each path, after
+/// `unsquashfs -x` has restored them onto extracted files.
+///
+/// One guest call: extract, then `getfattr -R` over the tree. `-e hex`
+/// rather than base64 because decoding hex needs nothing but this function,
+/// and a `user.big` value of 300 bytes has to survive the comparison
+/// exactly.
+///
+/// A path with no attributes simply does not appear, which is what
+/// `list_xattrs` reports for it too — so `bare.txt` compares equal as an
+/// empty map rather than as a special case.
+fn restored_xattrs(image: &Path) -> BTreeMap<String, BTreeMap<String, Vec<u8>>> {
+    let script = format!(
+        r#"set -euo pipefail
+dest="$(mktemp -d /var/tmp/fs-squashfs-restore.XXXXXX)"
+unsquashfs -f -x -d "$dest" {img} >/dev/null
+cd "$dest"
+getfattr -R -d -e hex . 2>/dev/null || true
+rm -rf "$dest""#,
+        img = guest_quote(&image.to_string_lossy()),
+    );
+    let out = oracle("bash").args(["-c", &script]).output();
+    assert!(
+        out.status.success(),
+        "restoring the attributes in the guest failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut all: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# file: ") {
+            // `getfattr -R .` reports `./two.txt`; the tests ask by `two.txt`.
+            let path = rest.trim().trim_start_matches("./").to_owned();
+            all.entry(path.clone()).or_default();
+            current = Some(path);
+        } else if let Some((name, value)) = line.split_once('=') {
+            let Some(path) = current.as_ref() else {
+                continue;
+            };
+            let hex = value.trim().trim_start_matches("0x");
+            let bytes = (0..hex.len())
+                .step_by(2)
+                .map(|i| {
+                    u8::from_str_radix(&hex[i..i + 2], 16)
+                        .unwrap_or_else(|e| panic!("getfattr hex {value:?}: {e}"))
+                })
+                .collect();
+            all.entry(path.clone())
+                .or_default()
+                .insert(name.trim().to_owned(), bytes);
+        }
+    }
+    all
 }
 
 /// What this driver says, for one path.
@@ -290,25 +198,13 @@ fn ours(fs: &Filesystem, path: &str) -> BTreeMap<String, Vec<u8>> {
 /// available: nothing in the comparison came from this repository.
 #[test]
 fn what_unsquashfs_restores_is_what_this_driver_reports() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute on this machine — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let img = fx.image("roundtrip", &["-xattrs"]);
     let fs = open_image_path(&img);
 
-    let dest = tempfile::tempdir().expect("tempdir");
-    let out = Command::new("unsquashfs")
-        .args(["-f", "-x", "-d"])
-        .arg(dest.path())
-        .arg(&img)
-        .output()
-        .expect("spawn unsquashfs");
-    assert!(
-        out.status.success(),
-        "unsquashfs failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // unsquashfs extracts and restores, and the guest's own getfattr reads
+    // the result back. Nothing in this comparison came from this repository.
+    let restored = restored_xattrs(&img);
 
     let mut checked = 0;
     for path in [
@@ -321,7 +217,7 @@ fn what_unsquashfs_restores_is_what_this_driver_reports() {
         "sub",
         "sub/inner.txt",
     ] {
-        let reference = fx.setter.list(&dest.path().join(path));
+        let reference = restored.get(path).cloned().unwrap_or_default();
         let got = ours(&fs, &format!("/{path}"));
         assert_eq!(
             got, reference,
@@ -342,10 +238,7 @@ fn what_unsquashfs_restores_is_what_this_driver_reports() {
 /// another. Both must come back, and identically.
 #[test]
 fn two_files_sharing_a_set_both_read_it() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let fs = open_image_path(&fx.image("shared", &["-xattrs"]));
     let a = ours(&fs, "/shared-a.txt");
     let b = ours(&fs, "/shared-b.txt");
@@ -362,10 +255,7 @@ fn two_files_sharing_a_set_both_read_it() {
 /// not depend on which set asked.
 #[test]
 fn an_out_of_line_value_reads_in_full_from_either_set() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let fs = open_image_path(&fx.image("ool", &["-xattrs"]));
     for path in ["/big.txt", "/big-too.txt"] {
         let got = ours(&fs, path);
@@ -390,10 +280,7 @@ fn an_out_of_line_value_reads_in_full_from_either_set() {
 /// `security.` attribute reported as `user.` is not a cosmetic error.
 #[test]
 fn the_trusted_and_security_namespaces_are_assembled_correctly() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let fs = open_image_path(&fx.image(
         "namespaces",
         &[
@@ -434,10 +321,7 @@ fn the_trusted_and_security_namespaces_are_assembled_correctly() {
 /// "could not look".
 #[test]
 fn absence_is_an_empty_list_and_not_a_failure() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let with = open_image_path(&fx.image("with", &["-xattrs"]));
     let bare = with.lookup_path("/bare.txt").expect("bare.txt");
     assert!(with.list_xattrs(&bare).unwrap().is_empty());
@@ -457,10 +341,7 @@ fn absence_is_an_empty_list_and_not_a_failure() {
 /// implemented over the other and a caller may use either.
 #[test]
 fn getting_one_attribute_agrees_with_listing_them_all() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let fs = open_image_path(&fx.image("get", &["-xattrs"]));
     for path in ["/two.txt", "/big.txt", "/sub"] {
         let inode = fs.lookup_path(path).expect(path);
@@ -487,6 +368,7 @@ fn getting_one_attribute_agrees_with_listing_them_all() {
 // ---------------------------------------------------------------------
 
 use fs_squashfs::capi::*;
+use fs_squashfs_test_support::{guest_quote, mksquashfs_from_guest_tree, oracle, ScratchDir};
 use std::ffi::{c_char, c_void, CStr, CString};
 
 /// `ENOENT`, as the header documents it. Spelled out rather than
@@ -516,10 +398,7 @@ fn mount(img: &Path) -> *mut fs_squashfs_fs_t {
 /// number, so the two must agree exactly.
 #[test]
 fn the_c_listxattr_probe_agrees_with_the_real_call() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let img = fx.image("capi-list", &["-xattrs"]);
     let fs = mount(&img);
     let path = cstr("/two.txt");
@@ -569,10 +448,7 @@ fn the_c_listxattr_probe_agrees_with_the_real_call() {
 /// writing.
 #[test]
 fn the_c_getxattr_returns_the_value_and_its_length() {
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping");
-        return;
-    };
+    let fx = Fixture::build();
     let img = fx.image("capi-get", &["-xattrs"]);
     let fs = mount(&img);
     let path = cstr("/big.txt");
@@ -647,10 +523,7 @@ fn the_c_xattr_entry_points_tolerate_nulls() {
         -1
     );
 
-    let Some(fx) = Fixture::build() else {
-        eprintln!("no way to set an extended attribute — skipping the rest");
-        return;
-    };
+    let fx = Fixture::build();
     let img = fx.image("capi-null", &["-xattrs"]);
     let fs = mount(&img);
     assert_eq!(
