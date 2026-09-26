@@ -179,6 +179,13 @@ jobs:
       # NO VM ON THIS RUNNER, so only the tiers that need none. This is
       # the architecture the crate ships on, and before the tiers existed
       # it ran nothing here that read an image at all.
+      #
+      # `chore lint` runs here as well as on x86_64 on purpose: clippy's
+      # findings are not always architecture-independent — a cast or an
+      # alignment assumption can be a warning on one target and silent on
+      # the other — and this is the target the crate ships on.
+      - name: chore lint
+        run: chore lint
       - name: chore test:unit
         run: chore test:unit
       - name: chore test:images

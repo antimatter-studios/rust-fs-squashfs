@@ -97,11 +97,17 @@ fn ours(fs: &Filesystem) -> BTreeMap<(String, String), String> {
             let child = fs
                 .lookup_path(&format!("/{path}"))
                 .unwrap_or_else(|e| panic!("lookup /{path}: {e:?}"));
+            // THE KERNEL'S VOCABULARY, NOT OURS. The guest reports what
+            // `stat -c '%F'` says with spaces turned into dashes —
+            // `directory`, `symbolic-link`, `regular-file`, and
+            // `regular-empty-file` for a zero-length one. Inventing a
+            // second set of words here would make every comparison fail on
+            // spelling and say nothing about the filesystem.
             if child.is_dir() {
-                out.insert(("type".into(), path.clone()), "dir".into());
+                out.insert(("type".into(), path.clone()), "directory".into());
                 stack.push(path);
             } else if child.is_symlink() {
-                out.insert(("type".into(), path.clone()), "link".into());
+                out.insert(("type".into(), path.clone()), "symbolic-link".into());
                 let target = fs
                     .read_symlink_target(&child)
                     .unwrap_or_else(|e| panic!("readlink /{path}: {e:?}"));
@@ -110,8 +116,13 @@ fn ours(fs: &Filesystem) -> BTreeMap<(String, String), String> {
                     String::from_utf8_lossy(&target).into_owned(),
                 );
             } else {
-                out.insert(("type".into(), path.clone()), "file".into());
                 let bytes = common::read_whole_file(fs, &format!("/{path}"));
+                let kind = if bytes.is_empty() {
+                    "regular-empty-file"
+                } else {
+                    "regular-file"
+                };
+                out.insert(("type".into(), path.clone()), kind.into());
                 out.insert(("size".into(), path.clone()), bytes.len().to_string());
                 out.insert(("sha256".into(), path), sha256_hex(&bytes));
             }
