@@ -161,10 +161,22 @@ against a real image is the gap #42 was opened for.
 
 ## The pin, and the red nightly
 
-This crate pins `am-fs-core` at `v0.2.10`, which predates a `CachingDevice`
-overflow fix released in `v0.2.11`. The **nightly fuzz run is red because of
-that pin**, not because of anything here. Tracked as rust-fs-core#147. Do not
-chase it as a defect in this crate, and do not bump the pin until #147 clears.
+This crate pins `am-fs-core` at `v0.2.13`, and the pin is a floor: `chore
+siblings` guarantees it and never moves a checkout backwards.
+
+It sat at `v0.2.10` for a while on purpose, because that predates a
+`CachingDevice` overflow fix and the **nightly fuzz run was red because of the
+pin**, not because of anything here (rust-fs-core#147). #147 and #129 have both
+closed and the fix is in `v0.2.11`, so that caution is spent — it is recorded
+here only because a stale "do not upgrade" note is how a repository ends up
+several releases behind without anyone deciding to be.
+
+This crate is READ-ONLY, so the change that held the four image crates back —
+#75 refusing a write past the end of a device, whose replacement is
+`BlockDevice::set_len` — does not reach it. Measured on this crate's own suite,
+`../rust-fs-core` swapped between the two refs: 263 passed against each, with
+one identical failure in both that is the host's `mksquashfs` being too old for
+`-xattrs-add`. rust-fs-core#168 tracks the rest of the family.
 
 `fuzz.yml` is nightly cron plus dispatch, so it never reports on a pull request
 and must never be required.
