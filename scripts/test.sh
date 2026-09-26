@@ -25,7 +25,13 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+# Kept in step with GUEST_SCRATCH in tests/support/src/lib.rs. /var/tmp
+# rather than /tmp: a tmpfs /tmp is sized from the guest's RAM and the
+# images are not all small.
+GUEST_SCRATCH=/var/tmp/fs-squashfs-tests
+
 if [[ -n "${FS_SQUASHFS_TEST_TMPDIR:-}" ]]; then
+    if [[ "${FLTH_GUEST:-}" != 1 ]]; then
     case "$FS_SQUASHFS_TEST_TMPDIR" in
         "$REPO"/*) ;;
         *)
@@ -35,8 +41,16 @@ if [[ -n "${FS_SQUASHFS_TEST_TMPDIR:-}" ]]; then
             exit 1
             ;;
     esac
+    fi
     # An exact caller-supplied directory is not ours to delete.
     mkdir -p "$FS_SQUASHFS_TEST_TMPDIR"
+elif [[ "${FLTH_GUEST:-}" == 1 ]]; then
+    # /repo is the 9p mount, and it is the one filesystem the oracle tools
+    # must not work on. In this direction there is no host to be invisible
+    # to, so the guest's own disk is simply better.
+    mkdir -p "$GUEST_SCRATCH"
+    RUN_DIR="$(mktemp -d "$GUEST_SCRATCH/run.XXXXXX")"
+    export FS_SQUASHFS_TEST_TMPDIR="$RUN_DIR"
 else
     mkdir -p "$REPO/tmp"
     RUN_DIR="$(mktemp -d "$REPO/tmp/fs-squashfs-tests.XXXXXX")"

@@ -36,3 +36,15 @@ tests/fixtures/*.sqfs
 # without them that suite has nothing to run and says so only once CI
 # has already gone red.
 !fuzz/corpus/**
+
+# THE SUITE'S SCRATCH DIRECTORY, AND IT IS INSIDE THE REPOSITORY ON
+# PURPOSE. The oracle tools run in the fs-linux-test-harness VM, which sees
+# this repository at the path the host knows it by and nothing else of the
+# host -- so an image under /tmp is a path the tool asked to read it cannot
+# open. scripts/test.sh and fs_squashfs_test_support::temp_dir both put
+# scratch here, and the tier logs live in tmp/logs/.
+/tmp/
+
+# The harness's shared directory (fs-linux-test-harness.toml's [share]):
+# what a run hands across to the guest and back.
+/.vm-share/

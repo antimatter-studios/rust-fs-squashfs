@@ -400,8 +400,19 @@ impl Oracle {
     /// Everything a tool touches is inside this repository, because that
     /// is the tree the guest has. Caught here, where the rule can be
     /// explained, rather than in the guest as a missing file.
+    /// THE RULE IS ONE-WAY, and this is the third place that asserts it —
+    /// the kernel oracle and `mksquashfs_from_guest_tree` have the same
+    /// relaxation. From the host the guest sees this repository and nothing
+    /// else, so a path outside it does not exist there. Running INSIDE the
+    /// guest every path is simply local, and scratch deliberately lives on
+    /// the guest's own disk rather than the 9p-mounted repository: mmap over
+    /// 9p is not reliable for what a formatter asks of it, and the sibling
+    /// rust-fs-erofs found that out as a SIGSEGV on CI's x86_64 guest.
     #[track_caller]
     fn check_path(&self, argument: &str) {
+        if in_guest() {
+            return;
+        }
         if !argument.starts_with('/') || !Path::new(argument).exists() {
             return;
         }

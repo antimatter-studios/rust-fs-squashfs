@@ -24,7 +24,108 @@ vars:
   TRIPLE: aarch64-apple-darwin
   LIBNAME: fs_squashfs
 
+  # The sibling pins. One place, read by `chore siblings` and — through
+  # that task — by CI. URL as well as ref: the family is not all in one
+  # org, and a URL rebuilt from a repo name points at a repository that
+  # does not exist for exactly the ones that are not.
+  FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
+  # v0.2.13: the release whose scripts/output-budget.sh answers the
+  # `--version` contract scripts/tier.sh checks, AND the one where a
+  # failing tier stops reading its log aloud. v0.2.11 and v0.2.12 satisfy
+  # the first and not the second, which would give up the behaviour these
+  # tiers exist for on the one path nobody watches.
+  FS_CORE_REF: v0.2.13
+  LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
+  LINUX_HARNESS_REF: v0.1.0
+
+# The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
+# harness is a sibling that `chore siblings` itself checks out: without
+# it this file must still load far enough to run that task. Every task
+# here that needs the VM says so when the harness is absent.
+#
+# No `dir:` — see the harness's vm.chores.yml: its tasks must run from
+# this repository's root, where fs-linux-test-harness.toml is.
+includes:
+  vm:
+    taskfile: ../fs-linux-test-harness/vm.chores.yml
+    optional: true
+
+# The reaper: any chore invocation stops a VM nothing else brought down
+# (a killed `chore fixtures`, a script run by hand). Fails soft, and does
+# nothing before the harness is checked out.
+lifecycle:
+  after_all:
+    - '[ ! -x ../fs-linux-test-harness/scripts/vm.sh ] || ../fs-linux-test-harness/scripts/vm.sh reap'
+
+
 tasks:
+
+  siblings:
+    desc: Check out the sibling repos this crate builds and tests against, at their pinned refs
+    # init + fetch-by-ref rather than clone: a ref here may be a bare
+    # commit, which `git clone --branch` cannot name. REFUSES TO MOVE A
+    # DIRTY SIBLING — a checkout is destructive to uncommitted work.
+    cmds:
+      - |
+        set -eu
+        # SIBLINGS LIVE BESIDE THE MAIN TREE, NOT BESIDE THIS CHECKOUT.
+        #
+        # `../$name` was resolved from wherever the task ran, and a thread
+        # worktree is not next to the main checkout -- it lives under the
+        # agent's own directory. A sibling set is a property of the machine,
+        # not of a checkout: one copy on disk is the whole point of siblings
+        # over submodules, and it holds only if every checkout of every crate
+        # agrees where that copy is. --git-common-dir names the main tree from
+        # a worktree AND from the main checkout, so this answers the same from
+        # anywhere.
+        #
+        # --path-format=absolute is required, not tidiness: without it a main
+        # checkout reports a bare `.git` and this resolves to `//$name`.
+        common="$(git rev-parse --path-format=absolute --git-common-dir)"
+        siblings_root="$(cd "$common/../.." && pwd)"
+        printf '%s\t%s\t%s\n' \
+          rust-fs-core          '{{.FS_CORE_URL}}'       '{{.FS_CORE_REF}}' \
+          fs-linux-test-harness '{{.LINUX_HARNESS_URL}}' '{{.LINUX_HARNESS_REF}}' \
+        | while IFS="$(printf '\t')" read -r name url ref; do
+            dir="$siblings_root/$name"
+            if [ ! -d "$dir/.git" ]; then
+              echo "siblings: cloning $name at $ref"
+              git init --quiet "$dir"
+              git -C "$dir" remote add origin "$url"
+              git -C "$dir" fetch --quiet origin "$ref"   # not --depth 1: merge-base needs history
+              git -C "$dir" checkout --quiet FETCH_HEAD
+              continue
+            fi
+            if [ -n "$(git -C "$dir" status --porcelain)" ]; then
+              echo "siblings: $name has uncommitted changes -- refusing to move it." >&2
+              exit 1
+            fi
+            git -C "$dir" fetch --quiet origin main "$ref"
+            # THE PIN IS A FLOOR, NOT A TARGET, AND THE SIBLING STAYS ON A BRANCH.
+            #
+            # One copy of core is shared by every crate on the machine, so a
+            # task that checks out the pinned ref whenever HEAD differs moves
+            # the checkout BACKWARDS: the oldest pin in the family wins. And
+            # checking out a tag DETACHES, which reads as a deliberate state
+            # that nothing complains about while it goes stale.
+            #
+            # So: guarantee a FLOOR, and never move anyone off their branch. A
+            # checkout that already contains the pinned ref is left exactly as
+            # it is. Only one genuinely below the floor is moved, and only by
+            # fast-forwarding a main that is already checked out. Anything else
+            # is reported for a human.
+            current="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
+            if git -C "$dir" merge-base --is-ancestor "$ref" HEAD; then
+              echo "siblings: $name at or ahead of $ref (on $current)"
+            elif [ "$current" = "main" ] && git -C "$dir" merge --ff-only --quiet origin/main 2>/dev/null; then
+              echo "siblings: $name fast-forwarded to $(git -C "$dir" rev-parse --short HEAD)"
+            else
+              echo "siblings: $name is on '$current' and below $ref; this task will not move it." >&2
+              echo "          It is one checkout shared by every crate here -- move it yourself." >&2
+              exit 1
+            fi
+          done
+
   staticlib:
     desc: Build the static library and its headers into this crate's dist/
     # NO `out` ARGUMENT, deliberately. A library does not write into its
@@ -91,9 +192,136 @@ tasks:
     desc: Debug build
     cmds: ['cargo build']
 
+  tools:
+    desc: "Install and verify what the HOST needs: python3, PyYAML, a C compiler, and the VM the oracle tools live in"
+    cmds: ['scripts/tools.sh']
+
+  # EVERY TIER SAYS HOW FEW TESTS STILL COUNT AS HAVING RUN IT.
+  #
+  # `tier.sh` fails a tier that PRINTS more than its budget; nothing
+  # failed a tier that printed almost nothing because it RAN almost
+  # nothing. The tiers select their targets by grep in
+  # `scripts/test-targets.sh`, so a helper renamed or a predicate edited
+  # empties a selection -- and `cargo test` with no matching target runs
+  # EVERY target rather than none, which is worse than either.
+  #
+  # Each floor below is MEASURED and recorded with its tier. Each call
+  # prints what it counted, so the numbers to raise them to are in the
+  # next run's log; raising one is a deliberate change, and a floor only
+  # ever goes up.
+  test:unit:
+    desc: 'Tests that need no tool, no fixture and no VM: the library, the binaries, and every tests/*.rs that reaches none of them'
+    cmds:
+      - 'scripts/tier.sh test:unit unit UNIT_LINES UNIT_BYTES -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      - 'scripts/test-floor.sh unit UNIT_FLOOR'
+
+  test:images:
+    desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
+    cmds:
+      - 'scripts/tier.sh test:images images IMAGES_LINES IMAGES_BYTES -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
+      - 'scripts/test-floor.sh images IMAGES_FLOOR'
+
+  test:oracle:
+    desc: 'squashfs-tools and this crate read each other — every tool call made inside the harness VM'
+    # NO `vm:up` HERE, deliberately. The first oracle call in each test
+    # process brings the VM up (idempotent, milliseconds when it is
+    # already running) and every later call rides one shared SSH
+    # connection. Nothing holds it, so the `after_all` reaper stops it
+    # when this invocation ends.
+    cmds:
+      - scripts/tools.sh --check
+      - 'scripts/tier.sh test:oracle oracle ORACLE_LINES ORACLE_BYTES -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      - 'scripts/test-floor.sh oracle ORACLE_FLOOR'
+
+  test:kernel:
+    desc: 'The driver reads, THE KERNEL reads back: our images loop-mounted by Linux in the guest'
+    # The gap unsquashfs cannot close: it reads the format from the same
+    # project that wrote the images, and Linux is the thing the images are
+    # for. These mount read-only in the guest and compare type, size,
+    # SHA-256 and symlink targets in both directions — plus a deliberate
+    # corruption the kernel has to refuse.
+    cmds:
+      - scripts/tools.sh --check
+      - 'scripts/tier.sh test:kernel kernel KERNEL_LINES KERNEL_BYTES -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - 'scripts/test-floor.sh kernel KERNEL_FLOOR'
+
+  test:vm:
+    desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
+    timeout: 120m
+    on_timeout:
+      - cmd: '../fs-linux-test-harness/scripts/vm.sh down || ../fs-linux-test-harness/scripts/vm.sh destroy'
+    cmds:
+      - |
+        set -eu
+        [ -x ../fs-linux-test-harness/scripts/vm.sh ] || {
+          echo "test:vm needs the harness sibling -- run 'chore siblings'." >&2
+          exit 1
+        }
+        share="$(../fs-linux-test-harness/scripts/vm.sh share)"
+        for sibling in rust-fs-core; do
+          [ -d "../$sibling/.git" ] || {
+            echo "test:vm: ../$sibling is not checked out -- run 'chore siblings'." >&2
+            exit 1
+          }
+          dest="$share/siblings/$sibling"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          git -C "../$sibling" archive --format=tar HEAD | tar -x -C "$dest"
+        done
+        guest_args=""
+        for arg in ${CLI_ARGS:-}; do
+          case "$arg" in --verbose|-v) continue ;; esac
+          guest_args="$guest_args $arg"
+        done
+        # shellcheck disable=SC2086  # the words are the point
+        scripts/tier.sh test:vm vm VM_LINES VM_BYTES -- \
+          ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
+        scripts/test-floor.sh vm VM_FLOOR
+
   test:
-    desc: Test suite
-    cmds: ['cargo test']
+    desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
+    # WE RUN THE LINUX TESTS ON LINUX. This host is Linux, so they run
+    # here; on a Mac there is no SquashFS module, no loop mount and no
+    # squashfs-tools worth trusting, so the same sources are built and run
+    # inside the guest instead (`test:vm`). Not a reduced run and not a
+    # skip: the whole suite, one Linux away.
+    cmds:
+      - |
+        set -eu
+        case " ${CLI_ARGS:-} " in
+          *" --verbose "*|*" -v "*) export OUTPUT_BUDGET_VERBOSE=1 ;;
+        esac
+        if [ "$(uname -s)" != Linux ]; then
+          echo "test: this host is $(uname -s) -- running the Linux suite in the harness VM."
+          exec "{{.CHORE_EXE}}" test:vm
+        fi
+        "{{.CHORE_EXE}}" test:native
+
+  test:native:
+    desc: 'The suite on this (Linux) host: unit (debug), the oracles, the kernel oracles, everything (release), the scripts'
+    cmds:
+      - task: test:unit
+      - scripts/tools.sh --check
+      - task: test:images
+      - task: test:oracle
+      - task: test:kernel
+      - 'scripts/tier.sh "test:native (whole suite, release)" suite SUITE_LINES SUITE_BYTES -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
+      - 'scripts/test-floor.sh suite SUITE_FLOOR'
+      - task: test:scripts
+      - scripts/test-verdict.sh unit images oracle kernel suite
+
+  test:scripts:
+    desc: The shell tests (tests/scripts/*.sh), every one by glob
+    cmds:
+      - |
+        set -eu
+        scripts/tier.sh test:scripts scripts SCRIPTS_LINES SCRIPTS_BYTES -- bash -c '
+          set -eu
+          for t in tests/scripts/*.sh; do
+            echo "== $t"
+            bash "$t"
+          done
+        '
 
   clean:
     desc: Remove this crate's cargo output
