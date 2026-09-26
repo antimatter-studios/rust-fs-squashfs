@@ -18,19 +18,15 @@
 //! Needs `mksquashfs` and `unsquashfs`; skips without them, fails in CI.
 
 mod common;
-use common::{dir, file, mksquashfs_available, unsquashfs_available};
+use common::{dir, file};
 
 use fs_squashfs::capi::*;
+use fs_squashfs_test_support::oracle;
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString};
-use std::process::Command;
 
 #[test]
 fn names_of_255_and_256_bytes_list_at_full_length_and_open() {
-    if !mksquashfs_available() || !unsquashfs_available() {
-        eprintln!("squashfs-tools not on PATH — skipping");
-        return;
-    }
     let n255 = "a".repeat(255);
     let n256 = "b".repeat(256);
     let p255 = format!("{n255} f 644 0 0 echo hi");
@@ -42,12 +38,12 @@ fn names_of_255_and_256_bytes_list_at_full_length_and_open() {
     );
 
     // The reference lists both at full length.
-    let out = Command::new("unsquashfs")
-        .arg("-lln")
-        .arg(&image.path)
-        .output()
-        .expect("spawn unsquashfs");
-    assert!(out.status.success());
+    let out = oracle("unsquashfs").arg("-lln").arg(&image.path).output();
+    assert!(
+        out.status.success(),
+        "unsquashfs -lln failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let listing = String::from_utf8_lossy(&out.stdout);
     let reference: BTreeSet<String> = listing
         .lines()

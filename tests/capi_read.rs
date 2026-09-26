@@ -21,8 +21,7 @@ mod common;
 use std::ffi::{c_void, CString};
 
 use common::{
-    basic_big_bin, basic_fixture_path, embed_at_offset, fixture_bytes, fs_core_handle,
-    mksquashfs_available, unsquashfs_available, MemDev,
+    basic_big_bin, basic_fixture_path, embed_at_offset, fixture_bytes, fs_core_handle, MemDev,
 };
 use fs_squashfs::capi::*;
 
@@ -511,12 +510,7 @@ fn rlib_short_read_loop_reassembles() {
 // ===========================================================================
 
 #[test]
-#[ignore = "requires squashfs-tools (unsquashfs); run with -- --ignored"]
 fn read_matches_unsquashfs_extract() {
-    if !mksquashfs_available() && !unsquashfs_available() {
-        eprintln!("skipping: squashfs-tools not on PATH");
-        return;
-    }
     let fs = mount_path();
     let via_driver = read_all_capi(fs, "/sub/deep/big.bin");
     unsafe { fs_squashfs_umount(fs) };

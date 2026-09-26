@@ -25,9 +25,8 @@ jobs:
       # The crate has a path dep on am-fs-core (../rust-fs-core). Clone the
       # sibling repo alongside, pinned to FS_CORE_REF, so cargo resolves it.
       # Anonymous HTTPS clone — rust-fs-core is public.
-      - name: clone am-fs-core sibling
-        shell: bash
-        run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -44,77 +43,49 @@ jobs:
             exit 1
           fi
 
-      # squashfs-tools provides mksquashfs / unsquashfs — the oracle
-      # binaries the #[ignore]-gated oracle / large-file / stress tests
-      # shell out to. Same install as ci.yml so the release-time gate
-      # exercises the same path as PR CI.
+      # THE RELEASE GATE IS THE SAME GATE, through the same tasks.
       #
-      # `attr` too, as ci.yml installs it: tests/xattr_oracle.rs needs a way
-      # to set an extended attribute and FAILS when `CI` is set and none
-      # exists, so without it every tagged release would stop here.
-      - name: install squashfs-tools and attr
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq squashfs-tools attr
-          mksquashfs -version | head -1
-          unsquashfs -version | head -1
-          setfattr --version | head -1
-
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      # A FLOOR, BECAUSE THE FAILURE MODE HERE IS AN ABSENCE, and it is
-      # worse here than in ci.yml: `publish` has `needs: test`, so a test
-      # job that executed nothing and exited 0 is the thing that says a
-      # crate is fit to go to crates.io. `cargo test` exits 0 on
-      # "0 passed; 0 failed", so a build that emitted no test binaries or
-      # a harness that died before its first case reports the same green
-      # as the full suite, and the release ships on it. Only a count
-      # taken from outside the suite sees that. See #101.
+      # This used to install squashfs-tools on the runner and run `cargo
+      # test --all-targets` and then `-- --ignored`, each with its own
+      # executed-test floor. All three parts are obsolete:
       #
-      # Measured 2026-09-06 on run 34036563214 (tag v0.1.5, the last
-      # green release): 124 executed by this step. Floor 110. The number
-      # is lower than ci.yml's 262 for two reasons and neither is a
-      # problem: `--all-targets` runs no doctests, and the suite has
-      # grown since v0.1.5. A floor measured from an older release is
-      # conservative by construction -- it is here to refuse zero, not to
-      # track the suite's size.
-      - name: cargo test (--all-targets), with an executed-test floor
-        run: |
-          cargo test --locked --all-targets 2>&1 | tee "$RUNNER_TEMP/test-all-targets.log"
-          rc=${PIPESTATUS[0]}
-          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-all-targets.log" | awk '{s+=$4} END{print s+0}')
-          echo "tests executed: $n (floor 110)"
-          if [ "$n" -lt 110 ]; then
-              echo "::error::only $n tests executed, floor is 110 — 124 ran on 2026-09-06 (run 34036563214, v0.1.5), and a release must not publish on a test job that stopped early rather than passed"
-              exit 1
-          fi
-          exit "$rc"
-      # Oracle tests are #[ignore]-gated so a fresh checkout without
-      # squashfs-tools still passes `cargo test`. The oracle is installed
-      # above, so opt them in here — this is the canonical "can we read
-      # what the upstream tooling emits, across every compressor" gate, the
-      # strongest signal the release artifact is sound.
+      #   * the tools live in the fs-linux-test-harness guest now, built
+      #     from a pinned source with every codec, so installing whatever
+      #     the runner's archive has would validate a release against the
+      #     wrong tool;
+      #   * there are no `#[ignore]`d tests left, so a second `--ignored`
+      #     pass selects nothing — a step that can only ever report zero,
+      #     which is exactly the empty green its own comment warned about;
+      #   * the floors moved into chores.yml, measured per tier, and a
+      #     floor restated here would be a second copy to drift.
       #
-      # ITS OWN FLOOR, BECAUSE `--ignored` SELECTS A DISJOINT SET: it runs
-      # the tests the step above skipped and none of the ones it ran, so
-      # the `install squashfs-tools and attr` step above failing quietly,
-      # or the `#[ignore]` attribute being lifted, empties this step alone
-      # and leaves the other at full strength. Being the canonical gate
-      # above makes an empty run here the most expensive green in the
-      # workflow: a release tagged on a comparison against nothing.
-      #
-      # Measured 2026-09-06 on run 34036563214 (tag v0.1.5): 17 executed
-      # by this step. Floor 15.
-      - name: cargo test (--all-targets, --ignored oracles), with an executed-test floor
-        run: |
-          cargo test --locked --all-targets -- --ignored 2>&1 | tee "$RUNNER_TEMP/test-all-targets-ignored.log"
-          rc=${PIPESTATUS[0]}
-          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-all-targets-ignored.log" | awk '{s+=$4} END{print s+0}')
-          echo "ignored-gated tests executed: $n (floor 15)"
-          if [ "$n" -lt 15 ]; then
-              echo "::error::only $n ignored-gated tests executed, floor is 15 — 17 ran on 2026-09-06 (run 34036563214, v0.1.5); the oracle suite did not run, so this release was validated against nothing"
-              exit 1
-          fi
-          exit "$rc"
+      # `chore test` is what PR CI runs, so a release is gated on the same
+      # thing rather than on a workflow-shaped imitation of it. Its tiers
+      # carry their own floors, and a tier that executed too little fails
+      # inside the task — which `publish: needs: test` then blocks on.
+      - name: chore siblings
+        run: chore siblings
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: chore tools
+        run: chore tools
+      - name: chore lint
+        run: chore lint
+      - name: chore test
+        run: chore test
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-release
+          path: tmp/logs/*.log
+          if-no-files-found: error
 
   publish:
     name: publish to crates.io

@@ -60,6 +60,10 @@ ruzstd = "0.8"
 lru = "0.12"
 
 [dev-dependencies]
+# The suite's one way in to a fixture, to a squashfs-tools oracle and to the
+# kernel, all of which live in the fs-linux-test-harness VM. Dev-only: it never
+# reaches a consumer of this crate.
+fs-squashfs-test-support = { path = "tests/support" }
 # Integration tests spawn `mksquashfs` to build fixtures into a tempdir.
 tempfile = "3"
 # CLI integration tests use `Command::cargo_bin("lssquashfs")` to spawn the

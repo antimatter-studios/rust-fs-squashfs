@@ -85,15 +85,21 @@ fn layout_asserts() -> String {
 
 #[test]
 fn the_c_header_lays_out_every_abi_struct_as_the_library_does() {
+    // A C COMPILER IS A HOST TOOL, NOT AN ORACLE, so it is not in the guest
+    // — and it is not optional either. `chore tools` installs and checks it.
+    //
+    // This used to skip when cc was absent, with an assertion that only
+    // fired under CI, so the one check that can catch fs_squashfs.h drifting
+    // from the library's real ABI silently did not run on any developer
+    // machine without a compiler.
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-    if Command::new(&cc).arg("--version").output().is_err() {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "no C compiler ({cc}) and CI is set, so the header's layout went unchecked"
-        );
-        eprintln!("no C compiler ({cc}) — skipping");
-        return;
-    }
+    assert!(
+        Command::new(&cc).arg("--version").output().is_ok(),
+        "no C compiler ({cc}): `chore tools` installs one. This test compiles \
+         the layout assertions, and it is the only thing that catches \
+         include/fs_squashfs.h disagreeing with the library's real ABI, so it \
+         fails rather than skipping."
+    );
     let dir = tempfile::tempdir().expect("tempdir");
     let src = dir.path().join("layout.c");
     let asserts = layout_asserts();

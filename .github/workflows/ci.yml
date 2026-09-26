@@ -1,314 +1,274 @@
 name: CI
 
+# EVERY JOB RUNS CHORE TASKS, so a green local `chore test` is the same
+# gate CI applies. Nothing here duplicates a budget or a floor: those live
+# in chores.yml, measured, and a job that re-stated one would be a second
+# copy to drift.
+#
+#   unit         `chore test:unit` on a runner with NO VM: the tests that
+#                need no tool, no fixture and no kernel. It is the job that
+#                proves the split is real.
+#   test         x86_64, where GitHub gives us KVM: `chore lint` and
+#                `chore test` — the whole gate, with every squashfs-tools
+#                call and every mount happening inside the harness VM.
+#   test-arm64   the architecture this crate actually ships on. GitHub's
+#                arm64 runners have no /dev/kvm, so no VM can start: this
+#                runs the VM-free tiers there, which is more than the old
+#                workflow ran on arm64 at all.
+#   suite-in-vm  `chore test:vm`: the whole suite COMPILED AND RUN INSIDE
+#                the guest. This is the path a macOS developer takes, and
+#                it is checked here so it cannot rot unnoticed.
+#   ci-ok        the one required check: green only when every job above
+#                succeeded, and red when any was skipped or cancelled.
+
 on:
+  pull_request:
   push:
     branches: [main]
-    tags: ['v*']
-  pull_request:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CHORE_VERSION: "0.11.0"
 
 jobs:
-  test:
-    name: test-${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        # Natively on ARM64 as well as x86_64. `c_char` is unsigned on
-        # aarch64-linux and signed on x86_64 and Apple targets, so a
-        # `buf as *mut u8` that is a real cast here is a no-op there and
-        # clippy refuses it, and a test written with `[0i8; N]` for a
-        # `char` buffer does not compile there at all. Both were on main
-        # with no step that could see them (#78). A native runner lints,
-        # builds and runs the suite; a cross `cargo check` would do only
-        # the first of those.
-        os: [ubuntu-latest, ubuntu-24.04-arm]
+  unit:
+    name: unit (no tools, no VM)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      # The crate has a path dep on am-fs-core (../rust-fs-core).
-      # Clone the sibling repo alongside so cargo can resolve it.
-      # Anonymous HTTPS clone — rust-fs-core is public.
-      - name: Clone sibling rust-fs-core
-        run: git clone --depth 1 --branch v0.2.13 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
-      - name: the one required check stands for every job
-        run: scripts/ci-gate.sh
-      - name: the agent guide carries the shared block
-        # AGENTS.md embeds agent-core, byte-identical with every sibling. This
-        # runs the script directly rather than through `chore lint`, because
-        # CI here does not install chore -- a guard wired only into a task
-        # nothing runs is a guard that reports protection it is not providing.
-        run: scripts/agents-core-check.sh
+      - name: Install chore
+        # Pinned (CHORE_VERSION) and checked against the release's
+        # checksums: the siblings, the tools and the tests all come
+        # through it.
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        # rust-fs-core (the path dependency) and fs-linux-test-harness, at
+        # the refs pinned in chores.yml.
+        run: chore siblings
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      # squashfs-tools provides mksquashfs / unsquashfs — the oracle
-      # binaries the #[ignore]-gated oracle / large-file / stress tests
-      # shell out to. Unlike ext4/ntfs there's no VM: the tooling is
-      # cross-platform and runs natively on the Linux runner.
-      - name: Install squashfs-tools
-        run: |
-          sudo apt-get update -qq
-          # `attr` provides setfattr/getfattr. The extended-attribute
-          # oracle sets attributes on its source tree with one and reads
-          # the round trip back with the other; without them it finds no
-          # way to set an attribute and skips, which reads exactly like
-          # passing.
-          sudo apt-get install -y -qq squashfs-tools attr
-          mksquashfs -version | head -1
-          unsquashfs -version | head -1
-          setfattr --version | head -1
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      # A FLOOR, BECAUSE THE FAILURE MODE HERE IS AN ABSENCE.
+          key: ${{ runner.os }}-unit-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # NO `chore tools` STEP, AND THAT IS NOT AN OMISSION.
       #
-      # This repository already refuses two neighbouring absences from
-      # inside the suite: tests/common/mod.rs turns an oracle binary that
-      # is not on PATH into a CI failure, and tests/xattr_oracle.rs does
-      # the same for a tempdir that cannot hold a `user.*` attribute.
-      # Both are asserts in test bodies, so both need a test to reach
-      # them. A run that executed zero tests reaches neither, and passes
-      # having compared this driver against nothing at all -- which is
-      # the exact outcome those two asserts exist to refuse. Nothing
-      # inside the suite can see the suite not running.
+      # `scripts/tools.sh` in install mode also checks the VM HOST through the
+      # harness's host-tools.sh — qemu and read-write /dev/kvm — because that
+      # is what a developer running `chore tools` wants to know. This runner
+      # has no /dev/kvm and is not meant to, so the step failed here while the
+      # jobs that actually use a VM passed:
       #
-      # `cargo test` exits 0 on "0 passed; 0 failed", so a filter that
-      # selects nothing, a build that emitted no test binaries, or a
-      # harness that died before its first case all report the same green
-      # as a full run. Only a count taken from outside the suite sees it.
+      #   missing: read-write access to /dev/kvm
+      #   chore: tools: exit status 1
       #
-      # Measured 2026-09-17 on run 35176059475 (main, aff1c80): 262
-      # executed by this step, identically on the x86_64 and the aarch64
-      # leg. Floor 240; it moves up with the suite and never down.
-      - name: cargo test (release), with an executed-test floor
-        run: |
-          cargo test --locked --release 2>&1 | tee "$RUNNER_TEMP/test-release.log"
-          rc=${PIPESTATUS[0]}
-          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-release.log" | awk '{s+=$4} END{print s+0}')
-          echo "tests executed: $n (floor 240)"
-          if [ "$n" -lt 240 ]; then
-              echo "::error::only $n tests executed, floor is 240 — 262 ran on 2026-09-17 (run 35176059475), and a run that executes less than that stopped early rather than passed"
-              exit 1
-          fi
-          exit "$rc"
-      # Oracle tests are #[ignore]-gated so a fresh checkout without
-      # squashfs-tools still passes `cargo test`. CI installed the oracle
-      # above, so we opt them in here.
-      #
-      # ITS OWN FLOOR, BECAUSE IT SELECTS A DISJOINT SET. `--ignored` runs
-      # the tests the step above did not run and none of the tests it did,
-      # so the two counts can collapse independently: squashfs-tools
-      # disappearing from the runner, or the `#[ignore]` attribute being
-      # lifted off the oracles, empties this step while leaving the one
-      # above at full strength. A single shared number would not notice.
-      # These are the cross-validation tests -- the only ones that check
-      # this driver against mksquashfs rather than against this
-      # repository's own expectations -- so an empty run here is the most
-      # expensive green in the workflow.
-      #
-      # Measured 2026-09-17 on run 35176059475 (main, aff1c80): 20
-      # executed by this step, identically on both legs. Floor 18.
-      - name: cargo test (release, --ignored oracles), with an executed-test floor
-        run: |
-          cargo test --locked --release -- --ignored 2>&1 | tee "$RUNNER_TEMP/test-ignored.log"
-          rc=${PIPESTATUS[0]}
-          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-ignored.log" | awk '{s+=$4} END{print s+0}')
-          echo "ignored-gated tests executed: $n (floor 18)"
-          if [ "$n" -lt 18 ]; then
-              echo "::error::only $n ignored-gated tests executed, floor is 18 — 20 ran on 2026-09-17 (run 35176059475); the oracle suite did not run, so this run compared the driver against nothing"
-              exit 1
-          fi
-          exit "$rc"
+      # The tiers that need the host's own tools call `scripts/tools.sh
+      # --check` themselves, and `--check` leaves the VM out for exactly this
+      # reason. The unit tier needs a C compiler for the header-layout test,
+      # and that test fails naming `chore tools` if one is absent.
+      - name: chore test:unit
+        run: chore test:unit
+      - name: Keep the tier logs
+        # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
+        # verdict; without this the detail dies with the runner and the only
+        # record left is the one line the terminal got. `if: always()`
+        # because the run worth reading is the one that failed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-unit
+          path: tmp/logs/*.log
+          if-no-files-found: error
 
-      # AND ONCE WITHOUT `--release` -- THE PR GATE COULD NOT SEE AN
-      # OVERFLOW OTHERWISE.
-      #
-      # overflow-checks defaults on in [profile.dev] and off in
-      # [profile.release]. Cargo.toml's [profile.release] carries lto,
-      # codegen-units, opt-level and panic only, and its [profile.dev]
-      # carries opt-level and panic only -- neither overrides the
-      # default, so the two runs above wrap a bad addition silently and
-      # report success. This repository already has a debug run --
-      # release.yml:59, `cargo test --locked --all-targets` -- but that
-      # workflow triggers on a version TAG, not a pull request, so a
-      # wrapping defect merges green here and only surfaces days later,
-      # detached from the change and from the reviewer who could have
-      # caught it, when someone else cuts the next release. See #66.
-      #
-      # `--lib` only: a second compile of the same sources, no oracle
-      # binaries needed, and the arithmetic lives in the unit tests.
-      # `EXPECT_OVERFLOW_CHECKS=1` tells
-      # `overflow_checks::the_build_the_gate_asked_to_check_does_check`
-      # in src/lib.rs that this is the run that must trap an overflow --
-      # asking the build directly rather than inferring it from which
-      # spellings of "disabled" happen to be absent from Cargo.toml. The
-      # release steps must NOT set it: the checks are off there
-      # deliberately, because that is what ships.
-      #
-      # Do not remove this as a duplicate of the runs above it, and do
-      # not drop the variable from it: tests/ci_profile.rs asserts that
-      # ci.yml -- this workflow specifically, not release.yml -- still
-      # runs a `cargo test` without `--release` that sets it, and says
-      # why release.yml having one is not enough.
-      #
-      # AND ITS OWN FLOOR, for the third disjoint selection in this job.
-      # `--lib` selects only the unit tests, so neither of the floors
-      # above covers it: the integration tests could all still run while
-      # the lib target built no test harness at all, and this step would
-      # report green on nothing. That matters more here than elsewhere,
-      # because `the_build_the_gate_asked_to_check_does_check` -- the
-      # test that proves overflow checks are actually on in this run --
-      # lives in the lib target. If this step executes zero tests, the
-      # assertion that the overflow gate is a gate has itself gone
-      # missing, and the workflow says so with a tick.
-      #
-      # Measured 2026-09-17 on run 35176059475 (main, aff1c80): 91
-      # executed by this step, identically on both legs. Floor 85.
-      - name: cargo test (debug --lib, overflow checks), with an executed-test floor
-        run: |
-          EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib 2>&1 | tee "$RUNNER_TEMP/test-overflow.log"
-          rc=${PIPESTATUS[0]}
-          n=$(grep -aoE 'test result: ok\. [0-9]+ passed' "$RUNNER_TEMP/test-overflow.log" | awk '{s+=$4} END{print s+0}')
-          echo "lib tests executed: $n (floor 85)"
-          if [ "$n" -lt 85 ]; then
-              echo "::error::only $n lib tests executed, floor is 85 — 91 ran on 2026-09-17 (run 35176059475); with an empty lib run nothing checked that overflow checks are on"
-              exit 1
-          fi
-          exit "$rc"
-
-  # Validate the reader + lssquashfs against the kernel's own SquashFS
-  # driver. We build an image with mksquashfs, loop-mount it with the
-  # in-kernel squashfs driver, and confirm three readers agree on the
-  # tree: (a) the kernel mount, (b) unsquashfs (upstream extractor), and
-  # (c) our pure-Rust driver via lssquashfs. Triple-agreement is the
-  # strongest "do we read SquashFS the way the world reads it" signal,
-  # and it runs on every PR + push so a read-path regression is caught
-  # before a tag ships.
-  validate-kernel-mount:
-    name: validate against kernel squashfs driver
-    runs-on: ubuntu-latest
+  test:
+    name: test (x86_64, oracles in the VM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Clone sibling rust-fs-core
-        run: git clone --depth 1 --branch v0.2.13 https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Install squashfs-tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq squashfs-tools
-      - name: Cache cargo registry
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-kmount-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build lssquashfs
-        run: cargo build --locked --release --bin lssquashfs
-      - name: Build a source tree and mksquashfs it (every compressor)
+          key: ${{ runner.os }}-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: chore tools
+        run: chore tools
+      # THE EVIDENCE, NOT THE CLAIM.
+      #
+      # ubuntu-24.04 ships squashfs-tools, and it is a version nobody here
+      # chose. If a test reached for it the run would pass having compared
+      # this driver against the wrong tool — which is exactly the failure
+      # this migration removes, and exactly the failure that is invisible.
+      #
+      # So every one of them is replaced with a stub that fails loudly.
+      # tests/test_contract.rs refuses the shapes that could get here, and
+      # this is the belt: the contract reads source, this watches behaviour.
+      - name: Make any squashfs-tools on the runner unusable
         run: |
-          set -euo pipefail
-          src=/tmp/src
-          mkdir -p "$src/sub/nested"
-          echo "hello world" > "$src/file.txt"
-          echo "another" > "$src/sub/another.txt"
-          # ~1.5 MiB pseudo-random payload so it spans many data blocks
-          # plus a tail fragment (exercises the block + fragment paths).
-          head -c 1572864 /dev/urandom > "$src/sub/nested/big.bin"
-          ln -s file.txt "$src/link"
-          for comp in gzip xz lz4 zstd lzo; do
-            mksquashfs "$src" "/tmp/out-$comp.sqfs" \
-              -comp "$comp" -noappend -no-progress -no-xattrs
+          set -eu
+          for tool in mksquashfs unsquashfs sqfstar squashfuse; do
+            path="$(command -v "$tool" 2>/dev/null || true)"
+            [ -n "$path" ] || continue
+            sudo mv "$path" "$path.host-copy"
+            printf '#!/bin/sh\necho "::error::%s ran on the runner; the oracle tools belong in the VM" >&2\nexit 97\n' \
+              "$tool" | sudo tee "$path" >/dev/null
+            sudo chmod +x "$path"
+            echo "poisoned $path"
           done
-      - name: Loop-mount with the in-kernel squashfs driver and diff trees
-        run: |
-          set -euo pipefail
-          src=/tmp/src
-          for comp in gzip xz lz4 zstd lzo; do
-            img="/tmp/out-$comp.sqfs"
-            mnt="/tmp/mnt-$comp"
-            sudo mkdir -p "$mnt"
-            # Real in-kernel SquashFS driver via a loop device.
-            sudo mount -t squashfs -o loop "$img" "$mnt"
-            # (1) kernel mount vs source tree.
-            sudo diff -r "$src" "$mnt"
-            # (2) upstream unsquashfs extract vs source (strict oracle).
-            rm -rf "/tmp/unsq-$comp"
-            unsquashfs -d "/tmp/unsq-$comp" -no-xattrs "$img"
-            diff -r "$src" "/tmp/unsq-$comp"
-            # (3) our pure-Rust driver: file contents must byte-match the
-            # kernel mount for each regular file in the tree.
-            for rel in file.txt sub/another.txt sub/nested/big.bin; do
-              ours="$(./target/release/lssquashfs "$img" cat "/$rel" | sha256sum | cut -d' ' -f1)"
-              theirs="$(sudo cat "$mnt/$rel" | sha256sum | cut -d' ' -f1)"
-              if [ "$ours" != "$theirs" ]; then
-                echo "[$comp] /$rel: driver ($ours) != kernel ($theirs)" >&2
-                exit 1
-              fi
-            done
-            # The driver's directory listing must match the kernel's.
-            ours_ls="$(./target/release/lssquashfs "$img" ls /sub | awk '{print $NF}' | sort)"
-            theirs_ls="$(ls -1 "$mnt/sub" | sort)"
-            if [ "$ours_ls" != "$theirs_ls" ]; then
-              echo "[$comp] /sub listing mismatch" >&2
-              echo "driver: $ours_ls" >&2
-              echo "kernel: $theirs_ls" >&2
-              exit 1
-            fi
-            # The driver's symlink target must match the kernel's readlink.
-            ours_link="$(./target/release/lssquashfs "$img" readlink /link)"
-            theirs_link="$(readlink "$mnt/link")"
-            [ "$ours_link" = "$theirs_link" ] || {
-              echo "[$comp] /link target mismatch: $ours_link != $theirs_link" >&2
-              exit 1
-            }
-            sudo umount "$mnt"
-            echo "[$comp] kernel mount, unsquashfs, and driver all agree."
-          done
+      - name: chore lint
+        run: chore lint
+      - name: chore test
+        run: chore test
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-x86_64
+          path: tmp/logs/*.log
+          if-no-files-found: error
+      - name: chore vm:status (the VM is down again)
+        # The reaper in chores.yml's lifecycle stops a VM nothing else
+        # brought down. If one is still up the run leaked it, and a leaked
+        # VM holds the machine-wide slot.
+        run: '! chore vm:status'
+
+  test-arm64:
+    name: test (aarch64, no KVM on this runner)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # No `chore tools` here either: GitHub's arm64 runners have no
+      # /dev/kvm, and install-mode tools.sh checks for it. See the unit job.
+      #
+      # NO VM ON THIS RUNNER, so only the tiers that need none. This is
+      # the architecture the crate ships on, and before the tiers existed
+      # it ran nothing here that read an image at all.
+      #
+      # `chore lint` runs here as well as on x86_64 on purpose: clippy's
+      # findings are not always architecture-independent — a cast or an
+      # alignment assumption can be a warning on one target and silent on
+      # the other — and this is the target the crate ships on.
+      - name: chore lint
+        run: chore lint
+      - name: chore test:unit
+        run: chore test:unit
+      - name: chore test:images
+        run: chore test:images
+      - name: chore test:scripts
+        run: chore test:scripts
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-aarch64
+          path: tmp/logs/*.log
+          if-no-files-found: error
+
+  suite-in-vm:
+    name: suite in the guest (the macOS path)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install chore
+        run: scripts/ci-install-chore.sh
+      - name: chore siblings
+        run: chore siblings
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      # NO RUST ON THE HOST for this job, deliberately: the guest has its
+      # own pinned toolchain and builds the suite with it. A host cargo
+      # here would only hide the guest's toolchain going missing.
+      - name: chore test:vm
+        run: chore test:vm
+      - name: Keep the tier logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-logs-suite-in-vm
+          path: tmp/logs/*.log
+          if-no-files-found: error
 
   # ONE CHECK GATES A MERGE, AND IT STANDS FOR EVERY JOB (#104).
   #
   # Branch protection names checks, and a check is a job name, so the
-  # required list is a copy of those names kept in a different system
-  # from the file that produces them. Rename a job and the required
-  # check is a name nothing reports — permanently pending, nothing
-  # merges, no failure to point at. Add one and it gates nobody.
+  # required list is a copy of those names kept in a different system from
+  # the file that produces them. Rename a job and the required check is a
+  # name nothing reports — permanently pending, nothing merges, no failure
+  # to point at. Add one and it gates nobody.
   #
-  # `if: always()` because a job that was cancelled or skipped is not a
-  # job that passed, and an aggregate that only ran when its needs
-  # succeeded would be skipped itself — and a skipped required check
-  # never reports at all.
+  # `if: always()` because a job that was cancelled or skipped is not a job
+  # that passed, and an aggregate that only ran when its needs succeeded
+  # would be skipped itself — and a skipped required check never reports.
   ci-ok:
     name: ci-ok
-    needs: [test, validate-kernel-mount]
     if: always()
+    needs: [unit, test, test-arm64, suite-in-vm]
     runs-on: ubuntu-latest
     steps:
-      - name: every gating job must have concluded success
+      - name: Every job ran and succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "test: ${{ needs.test.result }}"
-          echo "validate-kernel-mount: ${{ needs.validate-kernel-mount.result }}"
-          failed=0
-          for one in "test:${{ needs.test.result }}" \
-                     "validate-kernel-mount:${{ needs.validate-kernel-mount.result }}"; do
-              job=${one%%:*}
-              result=${one#*:}
-              if [ "$result" != "success" ]; then
-                  echo "::error::$job concluded '$result', not 'success' -- failure, cancellation and skipping all mean the gate did not run to completion"
-                  failed=1
-              fi
-          done
-          [ "$failed" = 0 ] || exit 1
-          echo "all gating jobs succeeded"
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::not green: $bad (failed, cancelled or skipped)"
+            exit 1
+          fi
+          echo "all required jobs succeeded"

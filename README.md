@@ -76,15 +76,30 @@ fs.read_file(&inode, 0, &mut buf)?;
 ## Tests
 
 ```sh
-cargo test                          # unit + in-crate tests (no external tools)
-cargo test --release -- --ignored   # oracle tests: need `squashfs-tools` on PATH
-cargo clippy --all-targets -- -D warnings
+chore test        # everything, on Linux natively and in a VM anywhere else
+chore test:unit   # the tiers that need no tool, no fixture and no VM
+chore lint
 ```
 
-The oracle tests (`tests/oracle_compat.rs`) build a fixture tree with
-`mksquashfs -comp {gzip,xz,lz4,zstd,lzo}` and read every path back through the
-driver, asserting exact bytes. They are `#[ignore]`-gated so `cargo test` stays
-green on a host without `squashfs-tools`; run them with `-- --ignored`.
+The suite is tiered, and each tier writes its whole output to
+`tmp/logs/<tier>.log` and prints one verdict line. A tier that prints more than
+its measured budget fails; so does one that executes fewer tests than its
+measured floor, because a run that stopped early reports no failures at all and
+only a count can see that.
+
+**You do not install `squashfs-tools` to run this.** The oracle tools —
+`mksquashfs`, `unsquashfs`, `sqfstar` — and the kernel mounts run inside a
+Debian guest that [fs-linux-test-harness][harness] boots, where they are built
+from source at a pinned version with every codec. One version, one platform,
+the same answers for everyone; on a Mac, where there is no SquashFS at all, the
+whole suite is compiled and run in the guest instead.
+
+The oracle tests build a fixture tree with `mksquashfs -comp
+{gzip,xz,lz4,zstd,lzo,lzma}` and read every path back through the driver,
+asserting exact bytes. **None of them skip**: a tool or fixture that cannot be
+reached fails the run, naming the task that provides it.
+
+[harness]: https://github.com/antimatter-studios/fs-linux-test-harness
 
 ## License
 

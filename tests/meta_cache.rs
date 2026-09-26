@@ -16,7 +16,7 @@
 //! Needs `mksquashfs` to build the fixture, and skips without it.
 
 mod common;
-use common::{build_with_mksquashfs, dir, file, mksquashfs_available, pattern, symlink, Node};
+use common::{build_with_mksquashfs, dir, file, pattern, symlink, Node};
 
 use fs_squashfs::Filesystem;
 
@@ -104,10 +104,6 @@ fn survey(fs: &Filesystem, at: &str, out: &mut Vec<Seen>) {
 
 #[test]
 fn the_cache_changes_the_speed_and_nothing_else() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     let image = build_with_mksquashfs("gzip", &fixture_tree());
 
     let cold = common::open_image_path(&image.path);

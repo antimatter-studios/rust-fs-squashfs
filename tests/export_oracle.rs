@@ -23,10 +23,10 @@
 //! Needs `mksquashfs`, and skips without it.
 
 mod common;
-use common::{dir, file, mksquashfs_available, symlink, ImageArtifact, Node};
+use common::{dir, file, symlink, ImageArtifact, Node};
 
 use fs_squashfs::Filesystem;
-use std::process::Command;
+use fs_squashfs_test_support::oracle;
 
 /// A tree with one of everything the export table has to cover: several
 /// directories, several files, and a symlink — the inode types are
@@ -76,10 +76,6 @@ fn build(extra: &[&str]) -> ImageArtifact {
 
 #[test]
 fn every_inode_number_resolves_to_the_file_it_names() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     let image = build(&[]);
     let fs = common::open_image_path(&image.path);
     assert!(
@@ -131,10 +127,6 @@ fn every_inode_number_resolves_to_the_file_it_names() {
 /// confuse.
 #[test]
 fn a_file_resolved_by_number_reads_the_same_bytes() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     let image = build(&[]);
     let fs = common::open_image_path(&image.path);
     for (path, want) in [
@@ -157,10 +149,6 @@ fn a_file_resolved_by_number_reads_the_same_bytes() {
 /// Zero is not an inode, and neither is one past the end.
 #[test]
 fn numbers_outside_the_image_are_refused() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     let image = build(&[]);
     let fs = common::open_image_path(&image.path);
     let count = fs.sb.inode_count;
@@ -184,10 +172,6 @@ fn numbers_outside_the_image_are_refused() {
 /// second might for a different number.
 #[test]
 fn an_image_built_without_exports_says_so_rather_than_guessing() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     let image = build(&["-no-exports"]);
     let fs = common::open_image_path(&image.path);
     assert!(!fs.is_exportable());
@@ -211,10 +195,6 @@ fn an_image_built_without_exports_says_so_rather_than_guessing() {
 /// lookup.
 #[test]
 fn the_superblock_flag_agrees_with_whether_the_table_is_there() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     /// `SQUASHFS_EXPORTABLE`, bit 7 of the superblock's flags word.
     const EXPORTABLE: u16 = 0x0080;
     for (extra, expect) in [(&[][..], true), (&["-no-exports"][..], false)] {
@@ -237,10 +217,6 @@ fn the_superblock_flag_agrees_with_whether_the_table_is_there() {
 /// a file identifier actually lives.
 #[test]
 fn the_c_surface_resolves_a_number_the_same_way() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     use fs_squashfs::capi::*;
     use std::ffi::CString;
 
@@ -305,18 +281,14 @@ fn the_c_surface_resolves_a_number_the_same_way() {
 /// hold the number of inodes the export table is sized from.
 #[test]
 fn the_inode_count_the_table_is_sized_from_is_the_one_unsquashfs_counts() {
-    if !mksquashfs_available() {
-        eprintln!("mksquashfs not on PATH — skipping");
-        return;
-    }
     let image = build(&[]);
     let fs = common::open_image_path(&image.path);
-    let out = Command::new("unsquashfs")
-        .args(["-s"])
-        .arg(&image.path)
-        .output()
-        .expect("spawn unsquashfs");
-    assert!(out.status.success());
+    let out = oracle("unsquashfs").args(["-s"]).arg(&image.path).output();
+    assert!(
+        out.status.success(),
+        "unsquashfs -s failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = String::from_utf8_lossy(&out.stdout);
     let reported: u32 = text
         .lines()
