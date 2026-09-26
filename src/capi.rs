@@ -1046,8 +1046,7 @@ mod buffer_capacity_tests {
 mod needs_host {
     use super::*;
 
-    /// An image of two files, the larger one of many 4 KiB blocks, or
-    /// `None` without `mksquashfs`.
+    /// An image of two files, the larger one of many 4 KiB blocks.
     /// NOT `Option`. A missing tool used to make this return `None` and the
     /// test print "no mksquashfs -- skipping" and pass, which is the silence
     /// the harness removes: the tool is in the guest, and `oracle` fails
