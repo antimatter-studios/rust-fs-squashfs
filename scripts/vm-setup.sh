@@ -134,10 +134,19 @@ fi
 # `mksquashfs version 4.5.1 (2022/03/17)`, which is the exact string that
 # made the xattr test fail on a workstation while CI stayed green.
 #
-# sed, not head, on the tool: head exits after its count, the tool gets
-# SIGPIPE writing the next line, and pipefail turns that into a failed
-# setup.
-version="$(mksquashfs -version 2>&1 | sed -n 's/^mksquashfs version \([0-9][0-9.]*\).*/\1/p' | sed -n 1p)"
+# TWO SHELL TRAPS IN ONE LINE, BOTH MEASURED HERE.
+#
+# `|| true` because THESE TOOLS EXIT NON-ZERO FOR `-version`. unsquashfs
+# 4.6.1 prints `unsquashfs version 4.6.1 (2023/03/25)` and then fails, and
+# under `pipefail` that failed the whole provision AFTER the version had
+# been printed — so the log ended with the banner and no error, which is
+# the least useful shape a failure can have. A version banner is
+# information, not a gate; the gate is the comparison below, which reports
+# what it found.
+#
+# sed, not head: head exits after its count, the tool gets SIGPIPE writing
+# the next line, and pipefail turns that into a failed setup too.
+version="$({ mksquashfs -version 2>&1 || true; } | sed -n 's/^mksquashfs version \([0-9][0-9.]*\).*/\1/p' | sed -n 1p)"
 if [ "$version" != "$SQUASHFS_TOOLS_PIN" ]; then
     echo "vm-setup: the mksquashfs on PATH is not the one built here." >&2
     echo "          reports:     ${version:-(no version line)}" >&2
@@ -183,7 +192,8 @@ done
 rm -rf "$probe"
 
 echo "vm-setup: mksquashfs $version writes gzip, lzo, lz4, xz, zstd and lzma"
-unsquashfs -version 2>&1 | sed -n 1p
+# Informational, and tolerant of the same non-zero exit for the same reason.
+{ unsquashfs -version 2>&1 || true; } | sed -n 1p
 
 # The toolchain the repository pins, and only that one: a guest that
 # silently built with a different compiler than CI is a guest whose

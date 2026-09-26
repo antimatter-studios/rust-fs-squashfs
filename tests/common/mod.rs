@@ -19,7 +19,7 @@ use fs_squashfs::Filesystem;
 // The ONLY way to a squashfs-tools oracle or to the kernel: both live in
 // the fs-linux-test-harness guest, and this crate fails rather than skips
 // when they cannot be reached.
-use fs_squashfs_test_support::{oracle, ScratchDir};
+use fs_squashfs_test_support::{guest_quote, oracle, ScratchDir};
 
 /// In-memory `BlockRead` impl backed by a `Vec<u8>`. Owned via
 /// `Mutex<Vec<u8>>` so the device is `Send + Sync`.
@@ -217,24 +217,47 @@ pub fn build_with_mksquashfs_args(comp: &str, tree: &Node, extra: &[&str]) -> Im
 /// Extract a single file from a SquashFS image via `unsquashfs` and return
 /// its bytes -- a cross-check oracle independent of the Rust driver.
 pub fn unsquashfs_extract_file(image: &Path, inner_path: &str) -> Vec<u8> {
-    // In the repository, not the system temporary directory: unsquashfs
-    // writes what it extracts, and it writes it in the guest.
+    // EXTRACT ON THE GUEST'S OWN DISK; ONLY THE FILE CROSSES BACK.
+    //
+    // `unsquashfs` runs as root in the guest and restores the ownership
+    // recorded in the image, and the repository reaches the guest as a 9p
+    // share with `security_model=none` — where it cannot. Extracting
+    // straight into the repository therefore failed, with exit 2 and four
+    // copies of:
+    //
+    //   set_attributes: failed to change uid and gids on <path>,
+    //   because Operation not permitted
+    //
+    // That is a property of the transport, not of SquashFS, and this
+    // function's subject is the bytes. So the extraction happens on
+    // /var/tmp, where ownership means what it says, and a plain `cp` brings
+    // back the one file being compared — copying contents needs no
+    // privilege at all.
     let dest = ScratchDir::new("unsquashfs");
-    // `unsquashfs -d <dest> -no-xattrs <image> <inner_path>` extracts just
-    // that path under <dest>. The leading slash is dropped by unsquashfs.
-    let out = oracle("unsquashfs")
-        .args(["-f", "-no-xattrs", "-d"])
-        .arg(dest.path())
-        .arg(image)
-        .arg(inner_path.trim_start_matches('/'))
-        .output();
+    let inner = inner_path.trim_start_matches('/');
+    let out_path = dest.join("extracted.bin");
+    let script = format!(
+        r#"set -euo pipefail
+work="$(mktemp -d /var/tmp/fs-squashfs-unsq.XXXXXX)"
+status=0
+unsquashfs -f -no-xattrs -d "$work" {image} {inner} >/dev/null 2>&1 || status=$?
+if [ "$status" -eq 0 ]; then
+    cp "$work/{inner}" {out}
+fi
+rm -rf "$work"
+exit "$status""#,
+        image = guest_quote(&image.to_string_lossy()),
+        inner = inner,
+        out = guest_quote(&out_path.to_string_lossy()),
+    );
+    let out = oracle("bash").args(["-c", &script]).output();
     assert!(
         out.status.success(),
-        "unsquashfs failed: {}",
+        "unsquashfs -d <guest disk> {} {inner} failed: {}",
+        image.display(),
         String::from_utf8_lossy(&out.stderr)
     );
-    let extracted = dest.path().join(inner_path.trim_start_matches('/'));
-    std::fs::read(&extracted).expect("read unsquashfs-extracted file")
+    std::fs::read(&out_path).expect("read the file unsquashfs extracted")
 }
 
 /// Wraps the bytes of a built image alongside the tempdir keeping its

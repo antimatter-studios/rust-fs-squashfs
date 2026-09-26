@@ -140,24 +140,60 @@ than round-tripping writes.
 ## Running tests
 
 ```sh
-chore test        # the suite
+chore test        # everything, exactly as CI runs it
+chore test:unit   # no tool, no fixture, no VM — the only tier a bare host runs
+chore siblings    # rust-fs-core and fs-linux-test-harness, at their pinned refs
+chore tools       # what the HOST needs: python3, PyYAML, a C compiler
 chore build
-chore lint        # fmt, the agent-core check, clippy
+chore lint        # ci-gate, fmt, the agent-core check, clippy
 chore staticlib   # what the app links
 ```
 
-CI runs `test` and `validate-kernel-mount`, aggregated by `ci-ok`.
+On a host that is not Linux, `chore test` runs the whole suite **inside the
+guest** instead (`chore test:vm`). Not a reduced run and not a skip.
+
+CI is four jobs — `unit`, `test` (x86_64, with the VM), `test (aarch64)` and
+`suite in the guest` — aggregated by `ci-ok`, which is the one required check.
+
+## Every Linux thing happens in the fs-linux-test-harness VM
+
+The oracle tools are **not installed on a host**, and `chore tools` will not
+install them. `scripts/vm-setup.sh` builds **squashfs-tools 4.6.1** from source
+in the guest with gzip, lzo, lz4, xz, zstd and lzma, and then checks what it
+built rather than trusting it: an exact version match, and every codec must
+write an image `unsquashfs` reads back.
+
+That is not tidiness. Debian 12 packages 4.5.1, which does not know
+`-xattrs-add`, so `the_trusted_and_security_namespaces_are_assembled_correctly`
+failed on a workstation while passing on CI, whose archive is newer. A test
+whose verdict depends on the machine is not a test of this driver.
+
+`tests/support/` is the only way to a tool or to the kernel, and
+`tests/test_contract.rs` fails the suite if a test reaches either any other
+way — spawning a tool, mounting a filesystem, driving the VM, or announcing a
+skip. The x86_64 CI job additionally replaces any `squashfs-tools` on the
+runner with a stub that fails loudly: the contract reads source, that watches
+behaviour.
 
 ## The oracle is the kernel, with unsquashfs alongside
 
-`validate against kernel squashfs driver` mounts images with the **in-kernel
-SquashFS driver** and compares; `unsquashfs` extracts them independently. Our
-reader and the fixture builder share an interpretation, so only a third
-implementation can catch a misreading they agree on.
+`tests/kernel_readback.rs` loop-mounts our images with the **in-kernel
+SquashFS driver in the guest** and compares the whole tree in both directions —
+type, size, SHA-256 and symlink target — plus a corruption it has to refuse.
+`unsquashfs` is the second reference: there is no `fsck.squashfs`, so
+`assert_unsquashfs_walks` uses `unsquashfs -lls`, which walks every inode.
+`-stat` would read the superblock and stop, so an image corrupt past byte 96
+would pass it.
 
-Images come from `mksquashfs` with the compressors the format allows — gzip,
-lzo, lz4, xz, zstd and lzma. A codec claimed as supported and never exercised
-against a real image is the gap #42 was opened for.
+Our reader and the fixture builder share an interpretation, so only a third
+implementation can catch a misreading they agree on. Every compressor the
+kernel supports is put in front of it; `lzma` is legacy and the kernel has
+none, so `unsquashfs` covers that one. A codec claimed as supported and never
+exercised against a real image is the gap #42 was opened for.
+
+**Nothing skips.** The 26 `#[ignore]` attributes and every `*_available()`
+probe are gone. The one exception left is named and counted in
+`tests/test_contract.rs`, and #117 is why.
 
 ## The pin, and the red nightly
 
