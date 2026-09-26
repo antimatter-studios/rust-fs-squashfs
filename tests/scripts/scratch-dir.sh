@@ -94,5 +94,23 @@ $(grep -n 'starts_with(repo' tests/support/src/*.rs || true)
 EOF
 if [ "$guard_fails" -eq 0 ]; then ok; else fail=$((fail + guard_fails)); fi
 
+# EVERY SCRIPT A TASK OR THE HARNESS INVOKES MUST BE EXECUTABLE.
+#
+# fs-linux-test-harness.toml names scripts/guest-suite.sh as the [test]
+# guest_command and scripts/vm-setup.sh as [setup]; the guest runs them
+# directly, so a missing mode bit is `Permission denied` and an exit status of
+# 126 with nothing else to go on. Measured: `chore test:vm` failed exactly that
+# way because guest-suite.sh was committed 100644.
+#
+# git's mode is what matters, not the working tree's: a fresh clone gets the
+# committed bit, and CI is always a fresh clone.
+for s in scripts/*.sh tests/scripts/*.sh; do
+    mode="$(git ls-files -s "$s" | awk '{print $1}')"
+    [ -n "$mode" ] || continue      # not committed yet; nothing to assert
+    if [ "$mode" = 100755 ]; then ok; else
+        bad "$s is committed $mode, not 100755 — the guest and chore run these directly"
+    fi
+done
+
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

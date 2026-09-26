@@ -20,6 +20,71 @@ chore_min_version: 0.6.0
 # differs from rust-blk-probe, whose single binary lets its `artifact` name
 # a file: this crate produces libfs_squashfs.a AND the headers beside it, so
 # there is no single path to name.
+# QUIET BY DEFAULT, --verbose ON REQUEST, AND THE BUDGET IS A NUMBER.
+#
+#   A task prints a VERDICT: one line per tier, a final count, and the path of
+#   the log holding everything else. `chore test -- --verbose` (or
+#   OUTPUT_BUDGET_VERBOSE=1) streams the whole run.
+#
+#   Nothing is thrown away: every tier's output goes to tmp/logs/<tier>.log in
+#   full, including the per-call `[oracle vm]` and `[kernel vm]` evidence that
+#   `--show-output` produces. What changed is where it is read from.
+#
+#   Each tier carries an OUTPUT BUDGET -- a line and a byte count that fails the
+#   run (exit 65) when the tier prints more than it is allowed to, told apart
+#   from a failing suite by its status. The budgets below are MEASURED, on an
+#   arm64 KVM host, from the run recorded in the pull request that added them:
+#
+#     tier      measured             budget            headroom, and why
+#     unit      132 l /   7,836 B    260 l / 18,000 B  +61 for a cold build,
+#               101 tests                              then room to grow
+#     images    138 l /   7,576 B    260 l / 18,000 B  the first --release tier
+#               112 tests                              in a job, so it pays the
+#                                                      cold build too
+#     oracle    672 l /  63,713 B    820 l / 80,000 B  --show-output keeps every
+#                92 tests                              tool call as evidence;
+#                                                      ~22% on the largest tier
+#     kernel     33 l /   4,082 B    140 l /  9,000 B  five kernel mounts and a
+#                 2 tests                              refusal; sized for cold
+#     suite     436 l /  22,594 B    600 l / 30,000 B  measured WARM (1
+#               308 tests                              Compiling); cold is ~496
+#     vm        591 l /  28,903 B    760 l / 38,000 B  measured COLD in the
+#               308 tests                              guest (61 Compiling,
+#                                                      241s), plus room for
+#                                                      vagrant's boot retries,
+#                                                      which this repository
+#                                                      does not control
+#     scripts     6 l /     142 B     30 l /  2,000 B  two shell guards today,
+#                                                      and the glob takes the
+#                                                      next one
+#
+#   A COLD BUILD ADDS 61 `Compiling` LINES, measured by `cargo clean` then the
+#   suite tier. It lands on whichever tier runs FIRST in a job, and on BOTH
+#   profiles -- `unit` is the only debug tier, so it pays its own. That is why
+#   the two smallest tiers carry the largest proportional headroom: `images`
+#   legitimately prints 129 lines and legitimately prints 190.
+#
+#   EVERY TIER ALSO HAS AN EXECUTED-TEST FLOOR, because the failure this
+#   repository kept meeting is an ABSENCE: 20 oracle tests were `#[ignore]`d and
+#   8 more sat behind an availability probe, so on a machine without
+#   squashfs-tools they ran as ZERO and the suite reported ok. A budget catches a
+#   tier that got louder; only a count catches one that stopped doing anything.
+#
+#   THE FLOORS RECONCILE, AND THAT IS WORTH CHECKING WHEN ONE MOVES:
+#   101 + 112 + 92 + 2 = 307 against the whole suite's 308, because the four
+#   tiers partition the same tests rather than sampling them. A tier that
+#   shrinks while none of the others grows means a file left the selection
+#   entirely, which is the shape scripts/test-targets.sh cannot see.
+#
+#   These numbers were re-measured once already. The first set was taken before
+#   five more test files were routed through the guest, which moved them from
+#   `unit` into `oracle` -- so `unit`'s floor was 140 against a tier that now
+#   executes 101, and the floor is what caught it. A measurement is only valid
+#   for the composition it was taken from.
+#
+#   Raise one DELIBERATELY when a tier grows, the way the floors are raised. A
+#   budget nobody can breach measures nothing, and a floor only ever goes up.
+
 vars:
   TRIPLE: aarch64-apple-darwin
   LIBNAME: fs_squashfs
@@ -220,14 +285,14 @@ tasks:
       # debug run is ASKED to prove it traps an overflow, and
       # tests/ci_profile.rs fails the suite if the gating workflow has no
       # such run — following `chore <task>` into this file to find it.
-      - 'EXPECT_OVERFLOW_CHECKS=1 scripts/tier.sh test:unit unit 300 20000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
-      - 'scripts/test-floor.sh unit 140'
+      - 'EXPECT_OVERFLOW_CHECKS=1 scripts/tier.sh test:unit unit 260 18000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      - 'scripts/test-floor.sh unit 95'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
     cmds:
-      - 'scripts/tier.sh test:images images 240 12000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
-      - 'scripts/test-floor.sh images 46'
+      - 'scripts/tier.sh test:images images 260 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
+      - 'scripts/test-floor.sh images 105'
 
   test:oracle:
     desc: 'squashfs-tools and this crate read each other — every tool call made inside the harness VM'
@@ -282,9 +347,9 @@ tasks:
           guest_args="$guest_args $arg"
         done
         # shellcheck disable=SC2086  # the words are the point
-        scripts/tier.sh test:vm vm 99999 9999999 -- \
+        scripts/tier.sh test:vm vm 760 38000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        scripts/test-floor.sh vm 1
+        scripts/test-floor.sh vm 295
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
