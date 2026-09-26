@@ -1,4 +1,11 @@
 /target
+# AND ANY NESTED ONE. `/target` is anchored at the root, so it does not match
+# tests/support/target -- the support crate is its own package and cargo gives
+# it its own build directory when it is built on its own (`cargo test -p
+# fs-squashfs-test-support`). The sibling rust-fs-erofs committed 14 files and
+# 2.2 MB that way; this repository escaped it only because the directory did
+# not exist when the migration was committed.
+target/
 # Cargo.lock is intentionally tracked: this crate pins its dependencies and
 # CI builds with `--locked`, so the resolved lockfile must be committed and
 # kept in sync (the .githooks dependency gate enforces this).
