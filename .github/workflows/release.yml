@@ -10,6 +10,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # scripts/ci-install-chore.sh refuses to run without it; ci.yml pins the same.
+  CHORE_VERSION: "0.11.0"
   # Pinned tag of the sibling am-fs-core repo used to satisfy the path dep
   # during local build/verify. Bump in lockstep with the am-fs-core version
   # constraint in Cargo.toml when releasing a new fs-squashfs minor.

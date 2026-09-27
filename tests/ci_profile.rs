@@ -2612,3 +2612,44 @@ overflow-checks = false
         );
     }
 }
+
+/// Every workflow that installs chore pins the version it installs.
+///
+/// `scripts/ci-install-chore.sh` refuses to run without `CHORE_VERSION`,
+/// and the variable is set per workflow, not once for the repository.
+/// `release.yml` called the script and never set it, so the first tag
+/// pushed after the script arrived failed before a single test ran --
+/// and a tag is the only thing that runs that workflow, so no pull
+/// request could have shown it.
+#[test]
+fn every_workflow_that_installs_chore_pins_its_version() {
+    let dir = manifest_dir().join(".github").join("workflows");
+    let mut unpinned = Vec::new();
+    let mut installers = 0;
+    for entry in std::fs::read_dir(&dir).expect("read .github/workflows") {
+        let path = entry.expect("workflow entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+        let text = read_or_panic(&path);
+        if !text.contains("scripts/ci-install-chore.sh") {
+            continue;
+        }
+        installers += 1;
+        let pinned = text.lines().any(|line| {
+            let line = line.trim_start();
+            !line.starts_with('#') && line.starts_with("CHORE_VERSION:")
+        });
+        if !pinned {
+            unpinned.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    assert!(
+        installers >= 2,
+        "expected ci.yml and release.yml to install chore; found {installers} workflows that do"
+    );
+    assert!(
+        unpinned.is_empty(),
+        "these workflows run scripts/ci-install-chore.sh without setting CHORE_VERSION: {unpinned:?}"
+    );
+}
