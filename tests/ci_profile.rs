@@ -721,6 +721,21 @@ fn carries_any(keys: &[String], forbidden: &[&str]) -> bool {
 ///
 /// `! chore x` is NOT an invocation of `x` for this purpose: the `!`
 /// inverts it, so the step is green exactly when the task fails.
+/// Is this word the chore executable?
+///
+/// `chore`, a path ending in `/chore`, and `{{.CHORE_EXE}}` -- the
+/// Taskfile template variable for the running binary, which is how
+/// `chores.yml` calls one task from inside another task's shell block.
+///
+/// THE TEMPLATE SPELLING IS NOT A CURIOSITY. `chore test` reaches every
+/// tier in this repository through `"{{.CHORE_EXE}}" test:native`, so a
+/// resolver that only knew the literal `chore` stopped at the `test`
+/// task and saw nothing it runs -- which is every oracle tier, and the
+/// debug run too on any workflow that spells its step `chore test`.
+fn is_chore(word: &str) -> bool {
+    word == "chore" || word.ends_with("/chore") || word == "{{.CHORE_EXE}}"
+}
+
 fn chore_invocations(script: &str) -> Vec<String> {
     let mut found = Vec::new();
     for raw in script.lines() {
@@ -733,11 +748,11 @@ fn chore_invocations(script: &str) -> Vec<String> {
             let mut words = words
                 .iter()
                 .map(String::as_str)
-                .skip_while(|w| w.contains('=') && !w.starts_with('-'));
+                .skip_while(|w| (w.contains('=') && !w.starts_with('-')) || *w == "exec");
             let Some(program) = words.next() else {
                 continue;
             };
-            if program != "chore" && !program.ends_with("/chore") {
+            if !is_chore(program) {
                 continue;
             }
             if let Some(task) = words.find(|w| !w.starts_with('-')) {
@@ -771,6 +786,35 @@ fn chore_checking_debug_runs(
     task: &str,
     path: &mut Vec<String>,
 ) -> Vec<String> {
+    chore_gating_commands(tasks, task, path)
+        .into_iter()
+        .flat_map(|(trail, command)| {
+            checking_debug_runs(&command)
+                .into_iter()
+                .map(move |run| format!("chore {trail}: {run}"))
+        })
+        .collect()
+}
+
+/// Every shell command running `task` would run, as `(trail, command)`.
+///
+/// The rules about what counts live here and nowhere else, so the guards
+/// built on it cannot drift apart on them: a task carrying a key from
+/// [`NON_GATING_TASK_KEYS`] contributes nothing, nor does a `cmds:` item
+/// carrying one from [`NON_GATING_CMD_KEYS`]; a task naming itself,
+/// directly or through others, contributes the repeated edge once, which
+/// can only under-count; and a task that does not exist is a panic
+/// naming it rather than an empty result that would send the reader
+/// looking for the wrong cause.
+///
+/// `trail` is the chain of task names that reached the command, so a
+/// failure can say which task to edit rather than only which command is
+/// missing.
+fn chore_gating_commands(
+    tasks: &std::collections::BTreeMap<String, ChoreTask>,
+    task: &str,
+    path: &mut Vec<String>,
+) -> Vec<(String, String)> {
     if path.iter().any(|on_path| on_path == task) {
         return Vec::new();
     }
@@ -792,14 +836,19 @@ fn chore_checking_debug_runs(
     for cmd in &body.cmds {
         match cmd {
             ChoreCmd::Shell { keys, command } if !carries_any(keys, &NON_GATING_CMD_KEYS) => {
-                out.extend(
-                    checking_debug_runs(command)
-                        .into_iter()
-                        .map(|run| format!("chore {}: {run}", path.join(" -> "))),
-                );
+                out.push((path.join(" -> "), command.clone()));
+                // AND A TASK MAY CALL ANOTHER FROM INSIDE A SHELL
+                // BLOCK, not only through a `task:` item. `chores.yml`'s
+                // `test` picks between `test:native` and `test:vm` with
+                // a shell `if`, which no `task:` item can express -- so
+                // a walker that only followed `task:` stopped at `test`
+                // and saw none of the tiers it runs.
+                for called in chore_invocations(command) {
+                    out.extend(chore_gating_commands(tasks, &called, path));
+                }
             }
             ChoreCmd::Task { keys, name } if !carries_any(keys, &NON_GATING_CMD_KEYS) => {
-                out.extend(chore_checking_debug_runs(tasks, name, path));
+                out.extend(chore_gating_commands(tasks, name, path));
             }
             _ => {}
         }
@@ -2138,11 +2187,23 @@ tasks:
 
         let no_unit_step = workflow.replace("run: chore test:unit\n", "run: 'true'\n");
         assert_ne!(no_unit_step, workflow, "the mutation must actually apply");
+        let via_chore_test = gating(&no_unit_step, &chores);
+        // NON-EMPTY FIRST. `all` over an empty list is true, so this
+        // read as "only `chore test` reaches the run" while in fact
+        // NOTHING reached it: the resolver could not follow
+        // `"{{.CHORE_EXE}}" test:native`, so `chore test` was a dead end
+        // and the assertion passed by vacuity.
         assert!(
-            gating(&no_unit_step, &chores)
+            !via_chore_test.is_empty(),
+            "the `test` job's `chore test` must still reach the debug run once the \
+             unit job's step is gone -- it runs `test:native`, which runs `test:unit`"
+        );
+        assert!(
+            via_chore_test
                 .iter()
-                .all(|run| run.starts_with("chore test -> test:unit: ")),
-            "without the unit job's step, only `chore test` reaches the run"
+                .all(|run| run.starts_with("chore test -> test:native -> test:unit: ")),
+            "without the unit job's step, only `chore test` reaches the run, and only \
+             through test:native; got {via_chore_test:?}"
         );
         let neither = no_unit_step.replace("run: chore test\n", "run: 'true'\n");
         assert_ne!(neither, no_unit_step, "the mutation must actually apply");
@@ -2863,5 +2924,278 @@ mod core_pin_parser {
         assert_eq!(as_version("main"), None);
         assert_eq!(as_version("v0.2"), None);
         assert_eq!(as_version("v0.2.13"), Some("0.2.13".to_string()));
+    }
+}
+
+/// Every shell command a pull request's verdict depends on, following
+/// each `chore <task>` in a gating step into `chores.yml`.
+///
+/// The counterpart of [`gating_checking_debug_runs_via_chore`]: that one
+/// asks which of these commands is a checking debug run, this one hands
+/// them all back so a guard can ask something else of them. The chores
+/// text is a parameter for the same reason, so the rules can be proved
+/// against small fixtures.
+fn gating_commands_via_chore(workflow: &str, chores: &str) -> Vec<String> {
+    let tasks = parse_chores(chores);
+    scan_steps(workflow, true, &|run| {
+        let mut found: Vec<String> = run.lines().map(str::to_string).collect();
+        for task in chore_invocations(run) {
+            found.extend(
+                chore_gating_commands(&tasks, &task, &mut Vec::new())
+                    .into_iter()
+                    .map(|(_, command)| command),
+            );
+        }
+        found
+    })
+}
+
+/// The tiers that compare this crate against something that is not this
+/// crate, and what each one's oracle is.
+///
+/// Both are named because both fail the same way and for the same
+/// reason. A driver's own readers share its interpretation of the
+/// format, so a suite made only of them proves self-consistency; these
+/// two are the only tiers here that can say the interpretation is
+/// *right*.
+const CROSS_VALIDATING_TIERS: [(&str, &str); 2] = [
+    (
+        "kernel",
+        "the real in-kernel SquashFS driver, loop-mounting our images in the harness guest",
+    ),
+    (
+        "oracle",
+        "squashfs-tools, built from source at a pinned tag in the harness guest",
+    ),
+];
+
+/// The pull-request gate still cross-validates against something that is
+/// not this crate.
+///
+/// Nothing asserted this. `tests/ci_profile.rs` asserts a great deal
+/// about the debug run and nothing at all about the tiers that run an
+/// **independent** oracle rather than this crate marking its own
+/// homework — so deleting `- task: test:kernel` from `chores.yml`'s
+/// `test:native`, or putting an `if:` on the job that reaches it, left
+/// every check green under a name that still reads like
+/// cross-validation.
+///
+/// An executed-test floor cannot see it: the whole-suite tier runs every
+/// test file including `kernel_readback`, so the count barely moves. A
+/// required check cannot see it either: the job still reports green
+/// under the required name. rust-img-qcow2#97 is what this looks like
+/// once it has happened — a probe that returned early on every runner,
+/// in every job, while the test reported `ok` (#105).
+///
+/// Three facts, asserted separately because they fail separately: the
+/// tier is reached from a gating step, the tier says how few tests count
+/// as having run it, and the oracle is checked present rather than
+/// skipped past.
+#[test]
+fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() {
+    let path = workflow_path("ci.yml");
+    let workflow = read_or_panic(&path);
+    let chores = read_or_panic(&manifest_dir().join("chores.yml"));
+
+    if let Some(why) = not_a_pull_request_gate(&workflow) {
+        panic!("{}: {why}", path.display());
+    }
+    let commands = gating_commands_via_chore(&workflow, &chores);
+
+    for (tier, oracle) in CROSS_VALIDATING_TIERS {
+        // 1. THE TIER IS REACHED, from a step whose result gates. A
+        //    step or task carrying `if:` or `continue-on-error:`, or a
+        //    task chore may skip as up to date, contributes nothing
+        //    here -- so it fails exactly as an absent tier does.
+        let runs = format!("tier.sh test:{tier} {tier} ");
+        assert!(
+            commands.iter().any(|c| c.contains(&runs)),
+            "nothing whose result gates a pull request runs the `{tier}` tier, which is \
+             how this crate is compared against {oracle}. Without it the suite is this \
+             driver's own readers agreeing with this driver's own writer, which is \
+             self-consistency and not correctness. The tier is reached from ci.yml's \
+             `test` job through `chore test` -> `test:native` -> `task: test:{tier}`; \
+             an `if:` or `continue-on-error:` anywhere on that path removes it as \
+             surely as deleting the task does."
+        );
+
+        // 2. AND IT SAYS HOW FEW TESTS COUNT AS HAVING RUN IT. A tier
+        //    whose selection stopped matching would otherwise run
+        //    nothing and pass: `scripts/test-targets.sh` refuses an
+        //    empty selection, but a floor is what catches the selection
+        //    that still matches something and no longer matches this.
+        let floor = format!("test-floor.sh {tier} ");
+        let floors: Vec<u32> = commands
+            .iter()
+            .filter_map(|c| c.split_once(&floor))
+            .filter_map(|(_, rest)| rest.split_whitespace().next())
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        assert!(
+            !floors.is_empty(),
+            "the `{tier}` tier runs in the gate with no `scripts/test-floor.sh {tier} N` \
+             after it, so a run that executed nothing reports the same as a run that \
+             executed everything."
+        );
+        assert!(
+            floors.iter().all(|&n| n >= 1),
+            "the `{tier}` tier's floor is {floors:?}. A floor of zero is not a floor: \
+             every run satisfies it, including the one that ran nothing."
+        );
+    }
+
+    // 3. AND THE ORACLE IS CHECKED PRESENT RATHER THAN SKIPPED PAST.
+    //    Both tiers begin with it. The tools live in the guest, so this
+    //    is what fails the run when the VM has not been provisioned --
+    //    the alternative being a test that decides there is no tool and
+    //    passes, which is the failure the whole suite is written
+    //    against.
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.contains("scripts/tools.sh --check")),
+        "no gating command runs `scripts/tools.sh --check`, so nothing fails the run \
+         when the oracle tools are missing: a tier that cannot reach its oracle would \
+         have to decide what to do about it, and the only answers are to fail loudly \
+         here or to skip quietly there."
+    );
+
+    // AND THE PROVISIONING STILL PROVIDES BOTH ORACLES. `tools.sh
+    //  --check` proves the guest answers; this proves the guest was
+    //  built with the two things the tiers compare against. The module
+    //  load is asserted with its refusal, because `modprobe` on a
+    //  kernel without the module is not an error on every distribution.
+    let setup = read_or_panic(&manifest_dir().join("scripts").join("vm-setup.sh"));
+    // SPLIT, like every other oracle-tool name in this file:
+    // tests/test_contract.rs scans test sources for the whole name and
+    // would read it as a test reaching for a tool on the host.
+    let writer = ["mksquash", "fs"].concat();
+    for (what, needle) in [
+        ("the in-kernel driver", "modprobe squashfs"),
+        ("the in-kernel driver's own verdict", "/proc/filesystems"),
+        ("squashfs-tools", "SQUASHFS_TOOLS_PIN="),
+        ("the image writer the oracle tier calls", writer.as_str()),
+    ] {
+        assert!(
+            setup.contains(needle),
+            "scripts/vm-setup.sh no longer provisions {what} ({needle:?} is gone). The \
+             tiers above would then be comparing this crate against nothing, and \
+             `tools.sh --check` is what would notice -- after the guest had already \
+             been built without it."
+        );
+    }
+}
+
+mod cross_validation_resolver {
+    use super::{chore_invocations, gating_commands_via_chore, is_chore};
+
+    /// The three spellings of the executable, and one that is not it.
+    #[test]
+    fn the_template_variable_is_the_chore_executable() {
+        assert!(is_chore("chore"));
+        assert!(is_chore("/usr/local/bin/chore"));
+        assert!(is_chore("{{.CHORE_EXE}}"));
+        assert!(!is_chore("chored"));
+        assert!(!is_chore("not-chore-at-all"));
+    }
+
+    /// `exec` before it is still an invocation of it. `chores.yml`'s
+    /// `test` reaches the whole macOS path through `exec
+    /// "{{.CHORE_EXE}}" test:vm`, and a resolver that stopped at `exec`
+    /// saw none of it.
+    #[test]
+    fn exec_before_the_executable_is_still_an_invocation() {
+        assert_eq!(
+            chore_invocations("exec \"{{.CHORE_EXE}}\" test:vm\n"),
+            vec!["test:vm".to_string()]
+        );
+    }
+
+    /// A task calling another from inside a shell block is followed,
+    /// not only a `task:` item. This is the shape `chores.yml` uses to
+    /// pick a path with a shell `if`, which no `task:` item can express.
+    #[test]
+    fn a_task_called_from_a_shell_block_is_followed() {
+        let workflow = "\
+on: [pull_request]
+jobs:
+  gate:
+    steps:
+      - run: chore outer
+";
+        let chores = "\
+tasks:
+  outer:
+    cmds:
+      - '\"{{.CHORE_EXE}}\" inner'
+  inner:
+    cmds:
+      - 'the-command-only-inner-runs'
+";
+        let commands = gating_commands_via_chore(workflow, chores);
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.contains("the-command-only-inner-runs")),
+            "a task called from a shell block was not followed: {commands:?}"
+        );
+    }
+
+    /// And the non-gating rules still apply through that edge: a task
+    /// chore may skip as up to date contributes nothing, however it was
+    /// reached.
+    #[test]
+    fn a_skippable_task_called_from_a_shell_block_contributes_nothing() {
+        let workflow = "\
+on: [pull_request]
+jobs:
+  gate:
+    steps:
+      - run: chore outer
+";
+        let chores = "\
+tasks:
+  outer:
+    cmds:
+      - '\"{{.CHORE_EXE}}\" inner'
+  inner:
+    sources:
+      - 'src/**/*.rs'
+    cmds:
+      - 'the-command-only-inner-runs'
+";
+        let commands = gating_commands_via_chore(workflow, chores);
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c.contains("the-command-only-inner-runs")),
+            "a task carrying `sources:` may be skipped as up to date, so it does not \
+             gate however it is reached: {commands:?}"
+        );
+    }
+
+    /// A task that calls itself terminates rather than recursing for
+    /// ever. The repeated edge contributes nothing, which can only
+    /// under-count.
+    #[test]
+    fn a_shell_block_calling_its_own_task_terminates() {
+        let workflow = "\
+on: [pull_request]
+jobs:
+  gate:
+    steps:
+      - run: chore loop
+";
+        let chores = "\
+tasks:
+  loop:
+    cmds:
+      - '\"{{.CHORE_EXE}}\" loop'
+      - 'the-command-after-the-cycle'
+";
+        let commands = gating_commands_via_chore(workflow, chores);
+        assert!(commands
+            .iter()
+            .any(|c| c.contains("the-command-after-the-cycle")));
     }
 }
