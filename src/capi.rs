@@ -11,7 +11,7 @@
 //! - fs_squashfs_stat(fs, path, attr) -> int
 //! - fs_squashfs_dir_open(fs, path) / _dir_next(iter) / _dir_close(iter)
 //! - fs_squashfs_read_file(fs, path, buf, offset, length) -> int64
-//! - fs_squashfs_readlink(fs, path, buf, bufsize) -> int
+//! - fs_squashfs_readlink(fs, path, buf, bufsize) -> int (target length)
 //! - fs_squashfs_last_error() -> *const c_char
 //! - fs_squashfs_last_errno() -> c_int
 //!
@@ -790,9 +790,12 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
         -1,
         AssertUnwindSafe(|| {
             clear_last_error();
-            if fs.is_null() || path.is_null() || buf.is_null() || bufsize == 0 {
-                set_err_msg("null fs/path/buf or zero bufsize", errno::EINVAL);
-                return -1;
+            if let Some(rc) = reject_if_null(
+                fs.is_null() || path.is_null() || buf.is_null(),
+                "fs/path/buf",
+                -1,
+            ) {
+                return rc;
             }
             let fs = unsafe { &(*fs).fs };
             let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
@@ -811,15 +814,28 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
                 return -1;
             }
             let target = &inode.symlink_target;
-            // Need room for the target + a NUL terminator.
-            if target.len() + 1 > bufsize {
-                set_err_msg("readlink buffer too small", errno::ERANGE);
+            // The result is the length, so it has to fit the return type.
+            let Ok(len) = c_int::try_from(target.len()) else {
+                set_err_msg(
+                    &format!("readlink {path}: target of {} bytes", target.len()),
+                    errno::ERANGE,
+                );
+                return -1;
+            };
+            // Room for the target AND its NUL, or nothing is written: a
+            // truncated target is a wrong answer that looks like a right one.
+            let needed = target.len() + 1;
+            if bufsize < needed {
+                set_err_msg(
+                    &format!("readlink {path}: buffer of {bufsize} bytes, {needed} needed"),
+                    errno::ERANGE,
+                );
                 return -1;
             }
-            let dst = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), bufsize) };
+            let dst = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), needed) };
             dst[..target.len()].copy_from_slice(target);
             dst[target.len()] = 0;
-            0
+            len
         }),
     )
 }

@@ -168,8 +168,24 @@ void fs_squashfs_dir_close(fs_squashfs_dir_iter_t *iter);
 int64_t fs_squashfs_read_file(fs_squashfs_fs_t *fs, const char *path,
                               void *buf, uint64_t offset, uint64_t length);
 
-/* Read a symlink target (NUL-terminated) into buf. Returns 0 on success,
- * -1 on failure (e.g. buffer too small -> errno ERANGE). */
+/*
+ * Read a symlink target into buf.
+ *
+ * On success returns the target's length in bytes, NOT counting the NUL --
+ * the same number Linux readlink(2) returns -- and writes the target
+ * followed by a NUL terminator into buf. Test for success with `>= 0`,
+ * not `== 0`: a link's length is its result.
+ *
+ * If bufsize < length + 1 (including bufsize == 0), returns -1 with
+ * fs_squashfs_last_errno() == ERANGE, fs_squashfs_last_error() naming the
+ * size needed, and NOTHING written into buf. This deliberately differs
+ * from readlink(2), which truncates silently: a truncated target is a
+ * wrong answer that looks like a right one.
+ *
+ * NULL fs, path or buf returns -1 with errno EINVAL. Any other
+ * failure returns -1 with errno set: ENOENT for a missing path, EINVAL
+ * for a path that is not a symlink, EIO for a corrupt image.
+ */
 int fs_squashfs_readlink(fs_squashfs_fs_t *fs, const char *path,
                          char *buf, size_t bufsize);
 

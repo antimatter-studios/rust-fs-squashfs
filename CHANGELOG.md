@@ -6,6 +6,19 @@ never does.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`fs_squashfs_readlink` returns the target's length, not 0.** On
+  success it returns the length in bytes excluding the NUL, as Linux
+  `readlink(2)` does, and still writes the target NUL-terminated. A
+  caller testing `== 0` for success must test `>= 0`. The same contract
+  is adopted by every driver in the family, so a consumer linking several
+  needs no per-driver wrapper (#121).
+- **A buffer too small is `ERANGE` and writes nothing, including
+  `bufsize == 0`**, which was `EINVAL`. The last error names the size
+  needed. `bufsize` must be at least the length plus one; exactly that
+  succeeds. NULL `fs`, `path` or `buf` stays `EINVAL`.
+
 ### Added
 
 - **The parsers are fuzzed, on two tiers.** SquashFS is read-only and
