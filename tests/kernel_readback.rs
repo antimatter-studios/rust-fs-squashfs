@@ -383,3 +383,144 @@ fn hardlinks_carry_the_count_and_the_identity_the_kernel_reports() {
         "this driver and the kernel disagree about WHICH paths are the same inode"
     );
 }
+
+// ===========================================================================
+// POSIX ACLs (#112)
+// ===========================================================================
+
+/// A tree carrying both kinds of ACL, and a `user.` attribute as the
+/// control that proves extended attributes survive at all.
+const ACL_TREE: &str = r#"
+mkdir -p d
+printf 'x\n' > d/f.txt
+setfattr -n user.colour -v blue d/f.txt
+setfacl -m u:1234:rwx,u:1235:r-x,g:1237:r-- d
+setfacl -d -m u:1234:rwx d
+setfacl -m u:1234:rwx d/f.txt
+"#;
+
+/// The extended attributes this driver reports for a path, as
+/// `name=value`, sorted.
+fn ours_xattrs(fs: &Filesystem, path: &str) -> Vec<String> {
+    let inode = fs
+        .lookup_path(path)
+        .unwrap_or_else(|e| panic!("lookup {path}: {e:?}"));
+    let mut out: Vec<String> = fs
+        .list_xattrs(&inode)
+        .unwrap_or_else(|e| panic!("list_xattrs {path}: {e:?}"))
+        .into_iter()
+        .map(|entry| {
+            format!(
+                "{}={}",
+                String::from_utf8_lossy(&entry.name),
+                String::from_utf8_lossy(&entry.value)
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// POSIX ACLs do not survive into a SquashFS image, and this driver
+/// agrees with the kernel about that and about what is left.
+///
+/// #112 asks for ACLs to be read back "value bytes and all". They
+/// cannot be: **the format has no `system.` namespace.** A SquashFS
+/// xattr carries its namespace as an index into three prefixes --
+/// `user.`, `trusted.`, `security.` (`xattr::PREFIXES`) -- and
+/// `system.posix_acl_access` is in none of them, so `mksquashfs` drops
+/// it. Measured on a staged tree that definitely had them:
+///
+/// ```text
+/// # before mksquashfs
+/// # file: d
+/// user:1234:rwx  group:1237:r--  mask::rwx  default:user:1234:rwx
+/// system.posix_acl_access=0sAgAAAAEABwD/////AgAHANIEAAAC...
+///
+/// # the same image, mounted by Linux
+/// # file: d
+/// user::rwx  group::rwx  other::r-x
+/// getfattr: d: Operation not supported
+/// ```
+///
+/// So the test that can exist is the one that matters: the driver must
+/// report exactly what the kernel reports, INCLUDING the permission bits
+/// the dropped ACL left behind. Note `group::r-x` becoming `group::rwx`
+/// above -- the ACL mask was written into the group bits, so an image
+/// built from a tree with ACLs has different effective group permissions
+/// from the tree. A driver that disagreed with the kernel here would be
+/// the "mounts fine and enforces the wrong permissions" failure the issue
+/// is about, and it is the half of it a read-only driver can have.
+#[test]
+fn acls_do_not_survive_the_format_and_the_driver_agrees_with_the_kernel() {
+    let scratch = ScratchDir::new("kernel-acls");
+    let image = scratch.join("acls.sqfs");
+    let out = mksquashfs_from_guest_tree(
+        &image,
+        ACL_TREE,
+        &["-comp", "gzip", "-noappend", "-no-progress", "-xattrs"],
+    );
+    assert!(
+        out.status.success(),
+        "mksquashfs on the ACL tree failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let path = image.to_str().expect("utf-8 image path");
+    let theirs = guest_kernel_report(path, "acls");
+    let fs = common::open_image_path(&image);
+
+    // 1. THE CONTROL. A `user.` attribute is in a namespace the format
+    //    has, so it must be there on both sides -- otherwise the
+    //    assertions below would pass on an image with no xattrs at all,
+    //    or on a `-xattrs` flag that stopped working.
+    assert_eq!(
+        ours_xattrs(&fs, "/d/f.txt"),
+        vec!["user.colour=blue".to_string()],
+        "the control attribute is missing, so this proves nothing about ACLs"
+    );
+    assert_eq!(
+        theirs.get(&("xattrs".to_string(), "d/f.txt".to_string())),
+        Some(&"user.colour=blue".to_string()),
+        "the kernel does not see the control attribute either"
+    );
+
+    // 2. AND NO ACL, on either side, on either path.
+    for path in ["/d", "/d/f.txt"] {
+        for attribute in ours_xattrs(&fs, path) {
+            assert!(
+                !attribute.starts_with("system."),
+                "this driver reports {attribute} on {path}, but the SquashFS xattr \
+                 namespace index has three values and `system.` is not one of them"
+            );
+        }
+    }
+    for ((field, path), value) in &theirs {
+        if field == "xattrs" {
+            assert!(
+                !value.contains("system.posix_acl"),
+                "the kernel reports {value} on {path}: the image carries an ACL after all, \
+                 and this test's premise is wrong"
+            );
+        }
+    }
+
+    // 3. THE PERMISSIONS THE DROPPED ACL LEFT BEHIND. This is what a
+    //    consumer acts on, and where a disagreement would be the failure
+    //    that matters.
+    for ((field, path), want) in &theirs {
+        if field != "mode" {
+            continue;
+        }
+        let inode = fs
+            .lookup_path(&format!("/{path}"))
+            .unwrap_or_else(|e| panic!("lookup /{path}: {e:?}"));
+        assert_eq!(
+            &format!("{:o}", inode.permissions & 0o7777),
+            want,
+            "mode of {path}: this driver and the kernel disagree about the permissions \
+             an image built from a tree with ACLs ended up with"
+        );
+    }
+}
