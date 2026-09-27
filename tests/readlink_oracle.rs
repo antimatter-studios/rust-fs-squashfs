@@ -85,7 +85,7 @@ fn readlink_returns_the_length_and_target_unsquashfs_reports() {
             rc, *size as c_int,
             "{name}: readlink must return the length"
         );
-        let got: Vec<u8> = buf[..*size].iter().map(|&b| b as u8).collect();
+        let got: Vec<u8> = buf[..*size].iter().map(|&b| b.to_ne_bytes()[0]).collect();
         assert_eq!(
             String::from_utf8_lossy(&got),
             target.as_str(),

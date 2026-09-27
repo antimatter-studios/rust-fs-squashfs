@@ -318,7 +318,10 @@ fn readlink_returns_the_target_length_and_writes_it_nul_terminated() {
         LINK_TARGET.len() as c_int,
         "readlink /link must return the target length, like readlink(2): {msg}"
     );
-    let written: Vec<u8> = buf[..LINK_TARGET.len()].iter().map(|&b| b as u8).collect();
+    let written: Vec<u8> = buf[..LINK_TARGET.len()]
+        .iter()
+        .map(|&b| b.to_ne_bytes()[0])
+        .collect();
     assert_eq!(written, LINK_TARGET);
     assert_eq!(buf[LINK_TARGET.len()], 0, "the target is NUL-terminated");
     assert_eq!(
@@ -337,7 +340,10 @@ fn readlink_fits_exactly_when_bufsize_is_length_plus_one() {
         "exact fit must succeed: {msg}"
     );
     assert_eq!(errno, 0);
-    let written: Vec<u8> = buf[..LINK_TARGET.len()].iter().map(|&b| b as u8).collect();
+    let written: Vec<u8> = buf[..LINK_TARGET.len()]
+        .iter()
+        .map(|&b| b.to_ne_bytes()[0])
+        .collect();
     assert_eq!(written, LINK_TARGET);
     assert_eq!(buf[LINK_TARGET.len()], 0);
     assert_eq!(buf[LINK_TARGET.len() + 1], SENTINEL);
