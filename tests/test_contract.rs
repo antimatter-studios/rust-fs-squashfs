@@ -482,7 +482,16 @@ fn find_manifests(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             // -- which is what happened when this was written whole, and
             // took `test_contract` itself with it.
             let fixtures = ["test-", "disks"].concat();
-            if matches!(name.as_str(), "target" | "tmp" | ".git") || name == fixtures {
+            // EVERY DOTTED DIRECTORY, not a list of the ones seen so far.
+            // The in-guest suite stages the sibling checkouts under
+            // `.vm-share/siblings/`, so a walk that only skipped `.git`
+            // found rust-fs-core's manifests and demanded this repository
+            // run another repository's tests. Caught by the guest job,
+            // which is the only place those directories exist.
+            if name.starts_with('.')
+                || matches!(name.as_str(), "target" | "tmp")
+                || name == fixtures
+            {
                 continue;
             }
             find_manifests(&path, out, depth + 1);
