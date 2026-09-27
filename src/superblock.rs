@@ -21,6 +21,11 @@ pub const SQUASHFS_MINOR: u16 = 0;
 
 /// Block-size bounds. SquashFS supports 4 KiB .. 1 MiB data blocks
 /// (block_log 12..=20). Reject anything outside to catch corruption.
+/// The smallest an inode can be on disk: `squashfs_base_inode_header`,
+/// the 16-byte common header every inode type begins with. Used to turn
+/// the inode table's extent into a bound on `inode_count`.
+const MIN_INODE_SIZE: usize = 16;
+
 const MIN_BLOCK_LOG: u16 = 12;
 const MAX_BLOCK_LOG: u16 = 20;
 
@@ -201,7 +206,68 @@ impl Superblock {
                 "root inode reference points outside the inode table",
             ));
         }
+        // `inode_count` against the room the inode table actually has.
+        //
+        // Nothing else bounds it on every image. The export table reader
+        // checks the count against the pointer array it sizes, and says
+        // so in its own comment -- but `mksquashfs -no-exports` is a
+        // normal option, common in firmware, and then
+        // `read_export_table` returns before that check is reached. So
+        // the one image shape where the value is attacker-controlled was
+        // the one shape nothing bounded it on, and it crosses the C ABI
+        // as the image declared it (#106).
+        //
+        // THE OBVIOUS BOUND -- `inode_count * 16 <= the table's extent`
+        // -- IS WRONG AND WOULD REFUSE ORDINARY IMAGES. The inode table
+        // is compressed metadata: a metablock holding 8192 bytes of
+        // inodes can be a few hundred bytes on disk, so the extent says
+        // nothing directly about how many inodes are in it.
+        //
+        // What the extent does bound is the number of METABLOCKS. Each
+        // is a 2-byte header and at least one byte of payload
+        // (`metablock::read` refuses `on_disk == 0`), so an extent of E
+        // bytes holds at most E/3 of them; each decompresses to at most
+        // `METADATA_SIZE`; and the smallest inode on disk is the 16-byte
+        // common header. That is a generous bound -- no real image comes
+        // near it, because no real metablock compresses to three bytes
+        // -- which is the point: it refuses only counts the table could
+        // not hold however well it compressed.
+        let extent = self
+            .inode_table_end()
+            .saturating_sub(self.inode_table_start);
+        let room = (extent / 3).saturating_mul((METADATA_SIZE / MIN_INODE_SIZE) as u64);
+        if u64::from(self.inode_count) > room {
+            return Err(Error::BadSuperblock(
+                "inode_count exceeds what the inode table has room for",
+            ));
+        }
         Ok(())
+    }
+
+    /// Where the inode table ends, as far as the superblock can say.
+    ///
+    /// The same shape as [`directory_table_end`], and for the same
+    /// reason: the nearest later table start, or `bytes_used`, is an
+    /// upper bound on this table's last byte. Unlike that one this
+    /// cannot be `u64::MAX` after `validate_against_device` has checked
+    /// the ordering -- `bytes_used` is always in the list and the inode
+    /// table always starts below it -- but the `unwrap_or` is kept so
+    /// the function is honest when called on its own.
+    ///
+    /// [`directory_table_end`]: Self::directory_table_end
+    pub fn inode_table_end(&self) -> u64 {
+        [
+            self.directory_table_start,
+            self.fragment_table_start,
+            self.export_table_start,
+            self.id_table_start,
+            self.xattr_id_table_start,
+            self.bytes_used,
+        ]
+        .into_iter()
+        .filter(|&t| t != crate::table::NO_TABLE && t > self.inode_table_start)
+        .min()
+        .unwrap_or(u64::MAX)
     }
 
     /// Where the directory table ends, as far as the superblock can say.
