@@ -35,7 +35,9 @@ mod common;
 
 use common::{dir, file, pattern, symlink};
 use fs_squashfs::Filesystem;
-use fs_squashfs_test_support::{guest_kernel_refusal, guest_kernel_report, sha256_hex};
+use fs_squashfs_test_support::{
+    guest_kernel_refusal, guest_kernel_report, mksquashfs_from_guest_tree, sha256_hex, ScratchDir,
+};
 use std::collections::BTreeMap;
 
 /// The tree every compressor is asked to carry.
@@ -213,5 +215,171 @@ fn a_damaged_superblock_is_refused_by_the_kernel() {
     assert!(
         !said.trim().is_empty(),
         "the kernel refused the image but said nothing about it"
+    );
+}
+
+// ===========================================================================
+// Hardlinks (#111)
+// ===========================================================================
+//
+// SquashFS is deduplicated at build time and read-only, so shared inodes
+// are ORDINARY rather than exotic: `mksquashfs` emits them for every
+// hardlink in the source tree, and distribution and container images are
+// full of them. Nothing here tested a link count or inode identity, and
+// the kernel report did not carry either field -- so the one oracle that
+// could have caught a wrong `nlink` was not being asked.
+//
+// Two facts, and they fail separately. The COUNT says how many names an
+// inode has; the IDENTITY says which names are the same inode. A driver
+// that reported `nlink` correctly and resolved two links to different
+// inodes would break `find -samefile`, package verification and every
+// backup tool that deduplicates by inode, while agreeing about the count.
+
+/// A tree staged in the guest, because hardlinks cannot be expressed in
+/// the `Node` model the other tests use -- a `Node` is a tree and a
+/// hardlink is what makes it a graph.
+///
+/// It covers what the issue asks for: two links in ONE directory, a
+/// third of the same inode in ANOTHER (so the resolution is not an
+/// accident of sharing a parent), a file with one link as the control,
+/// and a non-regular type that also carries a count.
+const HARDLINK_TREE: &str = r#"
+mkdir -p dir_a dir_b
+printf 'shared payload
+' > dir_a/original.txt
+ln dir_a/original.txt dir_a/same_dir_link.txt
+ln dir_a/original.txt dir_b/other_dir_link.txt
+printf 'alone
+' > dir_a/solo.txt
+mkfifo dir_a/pipe
+ln dir_a/pipe dir_a/pipe_link
+"#;
+
+/// This driver's `(nlink, inode number)` for every path in the image.
+fn ours_links(fs: &Filesystem) -> BTreeMap<String, (u32, u32)> {
+    let mut out = BTreeMap::new();
+    let mut stack = vec![String::new()];
+    while let Some(prefix) = stack.pop() {
+        let dir_path = if prefix.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{prefix}")
+        };
+        let inode = fs
+            .lookup_path(&dir_path)
+            .unwrap_or_else(|e| panic!("lookup {dir_path}: {e:?}"));
+        for entry in fs
+            .read_dir(&inode)
+            .unwrap_or_else(|e| panic!("read_dir {dir_path}: {e:?}"))
+        {
+            let name = String::from_utf8_lossy(&entry.name).into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let child = fs
+                .lookup_path(&format!("/{path}"))
+                .unwrap_or_else(|e| panic!("lookup /{path}: {e:?}"));
+            out.insert(path.clone(), (child.nlink, child.inode_number));
+            if child.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// Group paths by whichever number identifies their inode, so two sides
+/// that number inodes differently can still be compared on WHICH paths
+/// share one.
+fn classes<K: Ord + Clone, V: Ord + Clone>(of: &BTreeMap<K, V>) -> Vec<Vec<K>> {
+    let mut by_value: BTreeMap<V, Vec<K>> = BTreeMap::new();
+    for (key, value) in of {
+        by_value.entry(value.clone()).or_default().push(key.clone());
+    }
+    let mut out: Vec<Vec<K>> = by_value.into_values().collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn hardlinks_carry_the_count_and_the_identity_the_kernel_reports() {
+    let scratch = ScratchDir::new("kernel-hardlinks");
+    let image = scratch.join("hardlinks.sqfs");
+    let out = mksquashfs_from_guest_tree(
+        &image,
+        HARDLINK_TREE,
+        &["-comp", "gzip", "-noappend", "-no-progress"],
+    );
+    assert!(
+        out.status.success(),
+        "mksquashfs on the hardlink tree failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let path = image.to_str().expect("utf-8 image path");
+    let theirs = guest_kernel_report(path, "hardlinks");
+    let fs = common::open_image_path(&image);
+    let mine = ours_links(&fs);
+
+    // A FLOOR ON THE COMPARISON. Two empty maps agree about everything.
+    // The tree has six entries under two directories.
+    assert!(
+        mine.len() >= 8,
+        "this driver found only {} paths in the hardlink image; the tree has eight",
+        mine.len()
+    );
+
+    // 1. THE COUNT, for every path the kernel reported one for.
+    let mut checked = 0;
+    for ((field, path), want) in &theirs {
+        if field != "nlink" {
+            continue;
+        }
+        let (got, _) = mine.get(path).unwrap_or_else(|| {
+            panic!("the kernel sees {path} and this driver reports nothing for it")
+        });
+        assert_eq!(
+            &got.to_string(),
+            want,
+            "link count of {path}: this driver says {got}, the kernel says {want}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 8,
+        "only {checked} link counts were compared; the kernel should report one per path"
+    );
+
+    // AND THE COUNT IS NOT UNIFORMLY 1, which is what a driver that never
+    // read the field would report, and which every assertion above would
+    // accept on a tree of ordinary files.
+    let shared = mine.values().filter(|(nlink, _)| *nlink > 1).count();
+    assert!(
+        shared >= 4,
+        "only {shared} paths have more than one link, so this proves nothing about \
+         hardlinks: the tree has three names for one file and two for one pipe"
+    );
+
+    // 2. THE IDENTITY. The kernel's inode numbers are its own, so what is
+    // compared is which paths share one.
+    let theirs_ino: BTreeMap<String, String> = theirs
+        .iter()
+        .filter(|((field, _), _)| field == "ino")
+        .map(|((_, path), value)| (path.clone(), value.clone()))
+        .collect();
+    let mine_ino: BTreeMap<String, u32> = mine
+        .iter()
+        .map(|(path, (_, ino))| (path.clone(), *ino))
+        .collect();
+    assert_eq!(
+        classes(&mine_ino),
+        classes(&theirs_ino),
+        "this driver and the kernel disagree about WHICH paths are the same inode"
     );
 }
