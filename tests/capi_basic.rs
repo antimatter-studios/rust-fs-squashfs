@@ -13,7 +13,7 @@
 
 mod common;
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_int, CStr, CString};
 
 use common::basic_fixture_path;
 use fs_squashfs::capi::*;
@@ -288,51 +288,138 @@ fn dir_open_null_args_error_not_crash() {
     assert!(iter.is_null());
 }
 
-#[test]
-fn readlink_returns_target() {
+/// The fixture's `/link` points at `hello.txt`: 9 bytes.
+const LINK_TARGET: &[u8] = b"hello.txt";
+
+/// A byte no readlink ever writes into these buffers, so "untouched" is
+/// checkable: the target is ASCII and the terminator is 0.
+const SENTINEL: c_char = 0x5A;
+
+/// Call readlink on `/link` of the committed fixture with a buffer of
+/// `bufsize` bytes pre-filled with [`SENTINEL`], returning the result,
+/// errno, last error and the buffer as it was left.
+fn readlink_link(bufsize: usize) -> (c_int, c_int, String, Vec<c_char>) {
     let fs = mount_fixture();
     let p = CString::new("/link").unwrap();
-    let mut buf: [c_char; 256] = [0; 256];
-    let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), buf.len()) };
-    assert_eq!(rc, 0, "readlink /link failed: {}", last_err_str());
-    let target = unsafe { CStr::from_ptr(buf.as_ptr()) }
-        .to_string_lossy()
-        .into_owned();
-    assert_eq!(target, "hello.txt");
+    // One spare byte past `bufsize`, so a write beyond the size the
+    // caller declared shows up too.
+    let mut buf = vec![SENTINEL; bufsize + 1];
+    let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), bufsize) };
+    let (errno, msg) = (fs_squashfs_last_errno(), last_err_str());
     unsafe { fs_squashfs_umount(fs) };
+    (rc, errno, msg, buf)
+}
+
+#[test]
+fn readlink_returns_the_target_length_and_writes_it_nul_terminated() {
+    let (rc, _, msg, buf) = readlink_link(256);
+    assert_eq!(
+        rc,
+        LINK_TARGET.len() as c_int,
+        "readlink /link must return the target length, like readlink(2): {msg}"
+    );
+    let written: Vec<u8> = buf[..LINK_TARGET.len()].iter().map(|&b| b as u8).collect();
+    assert_eq!(written, LINK_TARGET);
+    assert_eq!(buf[LINK_TARGET.len()], 0, "the target is NUL-terminated");
+    assert_eq!(
+        buf[LINK_TARGET.len() + 1],
+        SENTINEL,
+        "nothing is written past the NUL"
+    );
+}
+
+#[test]
+fn readlink_fits_exactly_when_bufsize_is_length_plus_one() {
+    let (rc, errno, msg, buf) = readlink_link(LINK_TARGET.len() + 1);
+    assert_eq!(
+        rc,
+        LINK_TARGET.len() as c_int,
+        "exact fit must succeed: {msg}"
+    );
+    assert_eq!(errno, 0);
+    let written: Vec<u8> = buf[..LINK_TARGET.len()].iter().map(|&b| b as u8).collect();
+    assert_eq!(written, LINK_TARGET);
+    assert_eq!(buf[LINK_TARGET.len()], 0);
+    assert_eq!(buf[LINK_TARGET.len() + 1], SENTINEL);
+}
+
+#[test]
+fn readlink_one_byte_short_is_erange_and_writes_nothing() {
+    // Room for the target but not its NUL: Linux would truncate; this
+    // contract refuses instead.
+    let (rc, errno, msg, buf) = readlink_link(LINK_TARGET.len());
+    assert_eq!(rc, -1);
+    assert_eq!(errno, 34 /* ERANGE */);
+    assert!(
+        msg.contains(&(LINK_TARGET.len() + 1).to_string()),
+        "the error must name the size needed: {msg:?}"
+    );
+    assert!(
+        buf.iter().all(|&b| b == SENTINEL),
+        "a refused readlink must leave the buffer untouched: {buf:?}"
+    );
+}
+
+#[test]
+fn readlink_buffer_too_small_is_erange() {
+    let (rc, errno, _, buf) = readlink_link(4);
+    assert_eq!(rc, -1);
+    assert_eq!(errno, 34 /* ERANGE */);
+    assert!(
+        buf.iter().all(|&b| b == SENTINEL),
+        "buffer written: {buf:?}"
+    );
+}
+
+#[test]
+fn readlink_zero_bufsize_is_erange() {
+    // Zero is just the smallest buffer too small to hold the target.
+    let (rc, errno, _, buf) = readlink_link(0);
+    assert_eq!(rc, -1);
+    assert_eq!(errno, 34 /* ERANGE */);
+    assert!(
+        buf.iter().all(|&b| b == SENTINEL),
+        "buffer written: {buf:?}"
+    );
 }
 
 #[test]
 fn readlink_on_regular_file_is_einval() {
     let fs = mount_fixture();
     let p = CString::new("/hello.txt").unwrap();
-    let mut buf: [c_char; 256] = [0; 256];
+    let mut buf: [c_char; 256] = [SENTINEL; 256];
     let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), buf.len()) };
     assert_eq!(rc, -1, "readlink on a file must fail");
     assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    assert!(buf.iter().all(|&b| b == SENTINEL), "buffer written");
     unsafe { fs_squashfs_umount(fs) };
 }
 
 #[test]
-fn readlink_buffer_too_small_is_erange() {
+fn readlink_on_a_missing_path_is_enoent() {
     let fs = mount_fixture();
-    let p = CString::new("/link").unwrap();
-    // Target is "hello.txt" (9 bytes); 4 bytes can't fit it + NUL.
-    let mut buf: [c_char; 4] = [0; 4];
+    let p = CString::new("/no-such-link").unwrap();
+    let mut buf: [c_char; 256] = [SENTINEL; 256];
     let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), buf.len()) };
-    assert_eq!(rc, -1);
-    assert_eq!(fs_squashfs_last_errno(), 34 /* ERANGE */);
+    assert_eq!(rc, -1, "readlink on a missing path must fail");
+    assert_eq!(fs_squashfs_last_errno(), 2 /* ENOENT */);
+    assert!(buf.iter().all(|&b| b == SENTINEL), "buffer written");
     unsafe { fs_squashfs_umount(fs) };
 }
 
 #[test]
-fn readlink_zero_bufsize_is_einval() {
+fn readlink_null_buf_is_einval_even_when_it_would_be_too_small() {
     let fs = mount_fixture();
     let p = CString::new("/link").unwrap();
-    let mut buf: [c_char; 4] = [0; 4];
-    let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), buf.as_mut_ptr(), 0) };
-    assert_eq!(rc, -1);
-    assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    for bufsize in [0, 256] {
+        let rc = unsafe { fs_squashfs_readlink(fs, p.as_ptr(), std::ptr::null_mut(), bufsize) };
+        assert_eq!(rc, -1);
+        assert_eq!(
+            fs_squashfs_last_errno(),
+            22, /* EINVAL */
+            "bufsize {bufsize}"
+        );
+    }
     unsafe { fs_squashfs_umount(fs) };
 }
 
@@ -346,6 +433,7 @@ fn readlink_null_args_error_not_crash() {
             0,
         );
         assert_eq!(rc, -1);
+        assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
     }
 }
 
