@@ -228,6 +228,56 @@ fn a_root_inode_outside_the_inode_table_is_refused() {
     assert_refused(img, "root");
 }
 
+/// `inode_count` is the one superblock number nothing bounded.
+///
+/// It crosses the C ABI as the image declared it -- `src/capi.rs` fills
+/// the info struct straight from the superblock -- so a consumer sizing
+/// a listing, a progress total or an allocation from it got 0xFFFFFFFF
+/// out of a 96-byte header. The export table reader is the only other
+/// place the count meets reality, and `mksquashfs -no-exports` is a
+/// normal option that removes it (#106).
+#[test]
+fn an_inode_count_the_inode_table_has_no_room_for_is_refused() {
+    let mut img = fixture_bytes();
+    img[0x04..0x08].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+    assert_refused(img, "inode_count");
+}
+
+/// And it is refused on the image shape where nothing else could catch
+/// it: no export table, so `read_export_table` returns before its own
+/// count check.
+#[test]
+fn an_unbounded_inode_count_is_refused_on_a_no_exports_image() {
+    let mut img = fixture_bytes();
+    patch_u64(&mut img, 0x58, u64::MAX); // export_table_start = NO_TABLE
+    img[0x04..0x08].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+    assert_refused(img, "inode_count");
+}
+
+/// The bound is the room the table has, not a constant: an image whose
+/// inode table is one metablock has room for far fewer inodes than one
+/// with a hundred, and the count just under what this fixture's table
+/// could hold is accepted.
+#[test]
+fn an_inode_count_the_table_has_room_for_is_accepted() {
+    let mut img = fixture_bytes();
+    // No export table, so this bound is the only one the count meets
+    // and the test cannot pass on somebody else's refusal.
+    patch_u64(&mut img, 0x58, u64::MAX);
+    let inode_start = rd_u64(&img, 0x40);
+    let dir_start = rd_u64(&img, 0x48);
+    // The same arithmetic validate_against_device does: a metablock is
+    // a 2-byte header and at least one byte on disk, and decompresses
+    // to at most 8192 bytes, of which an inode is at least 16.
+    let room = ((dir_start - inode_start) / 3) * (8192 / 16);
+    img[0x04..0x08].copy_from_slice(&(room as u32).to_le_bytes());
+    assert!(
+        open_classify(img).expect("must not panic").is_none(),
+        "a count the table has room for must be accepted; only one it cannot \
+         possibly hold is a lie"
+    );
+}
+
 /// The control for all of the above: the fixture as mksquashfs wrote it
 /// still opens, so none of them passes by refusing everything.
 #[test]
