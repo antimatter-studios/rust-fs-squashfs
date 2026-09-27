@@ -380,9 +380,13 @@ fn readlink_buffer_too_small_is_erange() {
 #[test]
 fn readlink_zero_bufsize_is_erange() {
     // Zero is just the smallest buffer too small to hold the target.
-    let (rc, errno, _, buf) = readlink_link(0);
+    let (rc, errno, msg, buf) = readlink_link(0);
     assert_eq!(rc, -1);
     assert_eq!(errno, 34 /* ERANGE */);
+    assert!(
+        msg.contains(&(LINK_TARGET.len() + 1).to_string()),
+        "the error must name the size needed: {msg:?}"
+    );
     assert!(
         buf.iter().all(|&b| b == SENTINEL),
         "buffer written: {buf:?}"
