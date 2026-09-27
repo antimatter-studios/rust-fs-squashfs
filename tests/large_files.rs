@@ -3,13 +3,13 @@
 //!
 //! The committed `test-disks/squashfs-basic.sqfs` fixture's
 //! `/sub/deep/big.bin` (20000 bytes over 4096-byte blocks: 4 full blocks
-//! then a tail fragment) gives non-`#[ignore]` multi-block coverage that
-//! runs under a plain `cargo test`. The larger / multi-megabyte /
-//! per-compressor cases need `mksquashfs` and are `#[ignore]`-gated; run
-//! them with:
+//! then a tail fragment) gives multi-block coverage that needs no tool.
+//! The larger, multi-megabyte and per-compressor cases build their
+//! images with `mksquashfs` in the harness guest, which puts this file
+//! in the `oracle` tier:
 //!
 //! ```sh
-//! cargo test --release --test large_files -- --ignored
+//! chore test:oracle
 //! ```
 
 mod common;
