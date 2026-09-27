@@ -350,6 +350,13 @@ find . -mindepth 1 -printf '%P\n' | sort | while read -r path; do
     printf 'type\t%s\t%s\n' "$path" "$kind"
     printf 'mode\t%s\t%s\n' "$path" "$(stat -c '%a' "$path")"
     printf 'uidgid\t%s\t%s\n' "$path" "$(stat -c '%u:%g' "$path")"
+    # nlink AND ino, because a hardlink is the two of them together: the
+    # count says how many names an inode has, and the number says WHICH
+    # names are the same inode. Either alone can agree with a driver that
+    # has the other wrong (#111). The numbers are the kernel's own, so a
+    # comparison is between equivalence classes and not between values.
+    printf 'nlink\t%s\t%s\n' "$path" "$(stat -c '%h' "$path")"
+    printf 'ino\t%s\t%s\n' "$path" "$(stat -c '%i' "$path")"
     case "$kind" in
         regular-file | regular-empty-file)
             printf 'size\t%s\t%s\n' "$path" "$(stat -c '%s' "$path")"
@@ -376,8 +383,9 @@ printf 'kernel\t\t%s\n' "$(uname -r)"
 "#;
 
 /// Mount `image` read-only in the guest and report everything in it:
-/// for every path, its type, mode, owner, size, SHA-256, symlink target,
-/// device number and extended attributes, keyed by `(kind, path)`.
+/// for every path, its type, mode, owner, link count, inode number,
+/// size, SHA-256, symlink target, device number and extended attributes,
+/// keyed by `(kind, path)`.
 ///
 /// ONE GUEST CALL. A test compares this against what it wrote.
 #[track_caller]
