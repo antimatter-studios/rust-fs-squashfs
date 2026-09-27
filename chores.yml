@@ -288,7 +288,10 @@ tasks:
       # tests/ci_profile.rs fails the suite if the gating workflow has no
       # such run — following `chore <task>` into this file to find it.
       - 'EXPECT_OVERFLOW_CHECKS=1 scripts/tier.sh test:unit unit 260 18000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
-      - 'scripts/test-floor.sh unit 95'
+      # 112 executed on 2026-09-28, after the tier grew to cover every
+      # crate in the tree: the support crate's 9 tests had never run
+      # anywhere (#110). Raised from 95 with that measurement.
+      - 'scripts/test-floor.sh unit 105'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
@@ -381,7 +384,9 @@ tasks:
       - task: test:oracle
       - task: test:kernel
       - 'scripts/tier.sh "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
-      - 'scripts/test-floor.sh suite 295'
+      # 332 executed on 2026-09-28, for the same reason as unit's.
+      # Raised from 295 with that measurement.
+      - 'scripts/test-floor.sh suite 320'
       - task: test:scripts
       - scripts/test-verdict.sh unit images oracle kernel suite
 

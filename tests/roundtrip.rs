@@ -4,12 +4,11 @@
 //! large file, nested directories, and a symlink; squashes it; then reads
 //! it back through the pure-Rust driver and asserts every path matches.
 //!
-//! Skips when `mksquashfs` isn't on PATH, so the suite still runs on a
-//! host without squashfs-tools installed -- but not in CI. The probe is
-//! `common::mksquashfs_available`, which fails when `CI` is set: this is
-//! the one oracle that is not `#[ignore]`-gated, and it used to carry a
-//! private probe that skipped there too, so a broken install step went
-//! green having compared the driver against nothing (#44).
+//! `mksquashfs` runs in the harness guest, so this file is in the
+//! `oracle` tier and never looks for a tool on the host. It used to
+//! carry a private probe that skipped when the tool was missing, and a
+//! broken install step then went green having compared the driver
+//! against nothing (#44); #109 removed the last of those probes.
 
 use std::path::Path;
 use std::sync::Arc;

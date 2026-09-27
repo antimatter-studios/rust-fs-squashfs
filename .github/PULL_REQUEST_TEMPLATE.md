@@ -27,10 +27,10 @@
 
 ## Testing
 
-<!-- New tests added? Existing tests that exercise the change? Manual reproduction steps if no automated coverage exists. `cargo test --release` output snippet is fine. Oracle tests (`-- --ignored`) need `squashfs-tools` on PATH. -->
+<!-- New tests added? Existing tests that exercise the change? Manual reproduction steps if no automated coverage exists. `chore test` output snippet is fine; the oracle and kernel tiers run their tools in the harness guest. -->
 
 - [ ] `cargo test` passes locally (no external tools needed)
-- [ ] `cargo test --release -- --ignored` passes (with `squashfs-tools` installed)
+- [ ] `chore test` passes (every tier, oracles and kernel included)
 - [ ] `cargo clippy --all-targets -- -D warnings` clean
 - [ ] New tests cover the new code path (or "N/A" with rationale)
 

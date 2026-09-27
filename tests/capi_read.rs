@@ -7,9 +7,10 @@
 //! directly — this verifies the read *logic* behind the exports.
 //!
 //! Almost everything here reads the committed `test-disks/squashfs-basic.sqfs`
-//! fixture, so the bulk runs under a plain `cargo test` (no squashfs-tools).
-//! The one case that compares the driver against `unsquashfs` itself is
-//! `#[ignore]`-gated.
+//! fixture. The one case that compares the driver against `unsquashfs`
+//! calls it in the harness guest, which puts this file in the `oracle`
+//! tier -- `chore test:oracle`. Nothing here is gated on a tool being
+//! present: the helper fails, naming the task that provides it.
 //!
 //! Fixture geometry (see `test-disks/squashfs-basic.meta.txt`):
 //!   block_size = 4096

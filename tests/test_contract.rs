@@ -222,6 +222,46 @@ fn announced_skips(text: &str) -> Vec<String> {
     hits
 }
 
+/// Attributes that make a test not run: `#[ignore]`, in every spelling
+/// the compiler accepts.
+///
+/// The other half of [`announced_skips`], read from the other side. A
+/// test that prints "skipping" at least says so in the log; an ignored
+/// one is silent -- libtest counts it, exits 0, and the only trace is a
+/// number in a summary nobody reads. Fixing that number is what
+/// `scripts/tier.sh` does at run time; this names the file.
+///
+/// The attribute is never spelled whole in this function, so that this
+/// file does not report itself.
+fn ignore_attributes(text: &str) -> Vec<String> {
+    let bare = ["#[", "ignore]"].concat();
+    // The comparison is against the WHITESPACE-SQUASHED line, so the
+    // needle carries no spaces either: `#[ignore = "..."]` reads as
+    // `#[ignore="..."]` by the time it gets here.
+    let with_reason = ["#[", "ignore="].concat();
+    let with_reason_paren = ["#[", "ignore("].concat();
+    let mut hits = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        // PROSE IS NOT AN ATTRIBUTE. Several files explain in their
+        // header what used to be gated this way and how it is run now;
+        // a scan that read those would refuse the explanation along
+        // with the thing it explains, and the only way to satisfy it
+        // would be to stop writing the explanation down.
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let squashed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if squashed.contains(&bare)
+            || squashed.contains(&with_reason)
+            || squashed.contains(&with_reason_paren)
+            || (squashed.contains("cfg_attr(") && squashed.contains(",ignore"))
+        {
+            hits.push(format!("line {}: {}", i + 1, line.trim()));
+        }
+    }
+    hits
+}
+
 #[test]
 fn no_test_runs_an_oracle_tool_on_the_host() {
     let mut offenders = Vec::new();
@@ -298,6 +338,36 @@ fn no_test_announces_a_skip() {
     );
 }
 
+/// No test is marked to be skipped.
+///
+/// `#[ignore]` is the quietest skip there is: nothing is printed, the
+/// run exits 0, and the only evidence is a count in a summary line. The
+/// executed-test floors cannot see one arrive -- they carry margin, and
+/// one test fewer is well inside it.
+///
+/// There is no exception list here, unlike [`no_test_announces_a_skip`]:
+/// the one skip this suite still has is a printed notice, which that
+/// test names and counts. An `#[ignore]` would be a second way to skip,
+/// and a rule with two exceptions is a rule nobody believes.
+#[test]
+fn no_test_is_marked_ignore() {
+    let mut offenders = Vec::new();
+    for (path, text) in all_test_sources() {
+        for hit in ignore_attributes(&text) {
+            offenders.push(format!("{}: {hit}", path.display()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these tests are marked so they do not run. A test that cannot run FAILS, \
+         naming the task that would provide what it needed -- `fixture` and `oracle` \
+         both do. `scripts/tier.sh` refuses a tier whose log reports any ignored \
+         test, so this would fail the run anyway; it fails here to name the \
+         file:\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[test]
 fn no_test_drives_the_vm_or_mounts_a_filesystem_itself() {
     let mut offenders = Vec::new();
@@ -333,6 +403,123 @@ fn no_test_spawns_a_program_it_named_in_a_variable() {
     );
 }
 
+/// Every crate in the tree has its tests run by a tier.
+///
+/// `tests/support` is a path dev-dependency, not a workspace member, so
+/// `cargo test` leaves it out and so does `cargo test --workspace`. It
+/// had three tests that had never run once in CI -- one of them
+/// carrying a comment saying a test was the only thing that would
+/// notice its rule inverting, which is true, and it was not running
+/// (#110).
+///
+/// `scripts/test-targets.sh` therefore names the crates explicitly, and
+/// this refuses a crate in the tree that is not among them. A `Cargo.toml`
+/// added later is a deliberate line in that script or a failure here;
+/// what it cannot be is a suite nobody notices is absent.
+#[test]
+fn every_crate_in_the_tree_is_in_a_tier() {
+    // `fuzz` is its own package on its own toolchain, run by
+    // .github/workflows/fuzz.yml and excluded from the published crate.
+    // Its deterministic half is tests/fuzz_decoders.rs, which is in the
+    // unit tier like any other test file.
+    const NOT_A_TIER_CRATE: [&str; 1] = ["fs-squashfs-fuzz"];
+
+    let root = manifest_dir();
+    let selector = std::fs::read_to_string(root.join("scripts").join("test-targets.sh"))
+        .expect("read scripts/test-targets.sh");
+
+    let mut manifests = Vec::new();
+    find_manifests(&root, &mut manifests, 0);
+    assert!(
+        manifests.len() >= 3,
+        "found only {} Cargo.toml files; the scan is looking in the wrong place",
+        manifests.len()
+    );
+
+    let mut unrun = Vec::new();
+    for manifest in &manifests {
+        let text = std::fs::read_to_string(manifest).expect("read a Cargo.toml");
+        let Some(name) = package_name(&text) else {
+            continue;
+        };
+        if NOT_A_TIER_CRATE.contains(&name.as_str()) {
+            continue;
+        }
+        if !selector.contains(&format!("-p {name}")) {
+            unrun.push(format!("{} ({name})", manifest.display()));
+        }
+    }
+    assert!(
+        unrun.is_empty(),
+        "these crates are in the tree and no tier runs their tests, so every test \
+         in them is a file that compiles and never executes. Add `-p <name>` to \
+         CRATES in scripts/test-targets.sh, or name it in NOT_A_TIER_CRATE with \
+         the reason:\n{}",
+        unrun.join("\n")
+    );
+}
+
+/// Every `Cargo.toml` in the tree, skipping build output.
+fn find_manifests(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        if path.is_dir() {
+            // SPELT IN PIECES, like every other fixture and tool name in
+            // this file. `scripts/test-targets.sh` classifies a test by
+            // grepping its source for the fixture directory's name, so a
+            // file that merely mentions it is moved out of the unit tier
+            // -- which is what happened when this was written whole, and
+            // took `test_contract` itself with it.
+            let fixtures = ["test-", "disks"].concat();
+            // EVERY DOTTED DIRECTORY, not a list of the ones seen so far.
+            // The in-guest suite stages the sibling checkouts under
+            // `.vm-share/siblings/`, so a walk that only skipped `.git`
+            // found rust-fs-core's manifests and demanded this repository
+            // run another repository's tests. Caught by the guest job,
+            // which is the only place those directories exist.
+            if name.starts_with('.')
+                || matches!(name.as_str(), "target" | "tmp")
+                || name == fixtures
+            {
+                continue;
+            }
+            find_manifests(&path, out, depth + 1);
+        } else if name == "Cargo.toml" {
+            out.push(path);
+        }
+    }
+}
+
+/// The `name =` of a manifest's `[package]` section, if it has one.
+fn package_name(manifest: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package {
+            if let Some(value) = line.strip_prefix("name") {
+                let value = value.trim_start().strip_prefix('=')?.trim();
+                return Some(value.trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
 /// The scans find what they are for, so the two tests above cannot pass
 /// by looking at nothing.
 #[test]
@@ -354,6 +541,30 @@ fn the_scans_recognise_the_shapes_they_refuse() {
     assert_eq!(
         hits[..2],
         ["unsquashfs".to_string(), "/usr/sbin/sqfstar".to_string()]
+    );
+
+    // Every spelling of the attribute the compiler accepts, and the two
+    // things that look like it and are not: the word in prose, and a
+    // name that merely contains it.
+    let ignores = [
+        "#[",
+        "ignore]\n",
+        "#[",
+        "ignore = \"needs a tool\"]\n",
+        "  #[ ",
+        "ignore ]\n",
+        "#[cfg_attr(",
+        "not(feature = \"vm\"), ignore)]\n",
+        "//! Every test here is `#[",
+        "ignore]`-gated, once upon a time.\n",
+        "fn ignore_attributes_is_not_an_attribute() {}\n",
+    ]
+    .concat();
+    let found = ignore_attributes(&ignores);
+    assert_eq!(
+        found.len(),
+        4,
+        "four attributes, and neither the prose nor the function name: {found:?}"
     );
 
     let indirect = [

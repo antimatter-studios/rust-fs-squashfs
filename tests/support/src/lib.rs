@@ -240,13 +240,51 @@ pub fn fixture(manifest_dir: &str, name: &str) -> String {
 #[track_caller]
 pub fn assert_unsquashfs_walks(image: &str, tag: &str) {
     let out = oracle("unsquashfs").args(["-lls", image]).output();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(
         out.status.code(),
         Some(0),
-        "[{tag}] unsquashfs -lls {image}:\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        "[{tag}] unsquashfs -lls {image}:\n{stdout}{stderr}"
     );
+    // AND IT ACTUALLY LISTED SOMETHING. Exit zero is not a verdict of
+    // "clean": a report that could not check anything is not a report
+    // that found nothing wrong. This is the whole value of the call --
+    // `-lls` is used rather than `-stat` precisely because it walks
+    // every inode, and a walk that listed none has read the superblock
+    // and stopped, which is the check `-stat` was rejected for.
+    //
+    // The shapes that would reach here silently: a build without the
+    // decompressor this image needs, a future `unsquashfs` that ignores
+    // the option, and an image the tool decides is empty. All three exit
+    // zero today.
+    let entries = unsquashfs_listing_entries(&stdout);
+    assert!(
+        entries > 0,
+        "[{tag}] unsquashfs -lls {image} exited 0 and listed no inode at all, so \
+         nothing was cross-checked. A report that could not check something is not \
+         a verdict of clean.\nstdout:\n{stdout}stderr:\n{stderr}"
+    );
+}
+
+/// How many inodes an `unsquashfs -lls` report listed.
+///
+/// Each entry begins with the ten-character mode string `ls -l` uses --
+/// a type character and nine permission characters -- so a line that
+/// starts with one is an inode the tool walked. The banner lines
+/// (`Parallel unsquashfs: ...`, `N inodes (M blocks) to write`) do not,
+/// which is the point: a report consisting only of its own banner has
+/// listed nothing.
+pub fn unsquashfs_listing_entries(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter(|line| {
+            let mode: Vec<char> = line.chars().take(10).collect();
+            mode.len() == 10
+                && "-dlbcps".contains(mode[0])
+                && mode[1..].iter().all(|c| "rwxsStT-".contains(*c))
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -317,5 +355,57 @@ mod scratch_root {
             select_temp_dir_for(Some(OsStr::new("")), repo, false),
             PathBuf::from("/work/rust-fs-squashfs/tmp")
         );
+    }
+}
+
+#[cfg(test)]
+mod unsquashfs_verdict {
+    use super::unsquashfs_listing_entries;
+
+    /// A real report: two banner lines and three inodes.
+    #[test]
+    fn the_inodes_are_counted_and_the_banner_is_not() {
+        let report = "\
+Parallel unsquashfs: Using 4 processors
+3 inodes (3 blocks) to write
+
+drwxr-xr-x root/root                62 2026-09-01 12:00 squashfs-root
+-rw-r--r-- root/root              1024 2026-09-01 12:00 squashfs-root/a.txt
+lrwxrwxrwx root/root                 5 2026-09-01 12:00 squashfs-root/link -> a.txt
+";
+        assert_eq!(unsquashfs_listing_entries(report), 3);
+    }
+
+    /// THE ONE THAT MATTERS. A report that is only its own banner has
+    /// walked nothing, and exits zero doing it.
+    #[test]
+    fn a_report_with_no_inodes_counts_none() {
+        let banner_only = "\
+Parallel unsquashfs: Using 4 processors
+0 inodes (0 blocks) to write
+
+";
+        assert_eq!(unsquashfs_listing_entries(banner_only), 0);
+        assert_eq!(unsquashfs_listing_entries(""), 0);
+    }
+
+    /// Setuid, setgid and sticky bits are part of a mode string, and a
+    /// matcher that only knew `rwx-` would drop those entries.
+    #[test]
+    fn the_special_mode_bits_are_still_a_mode_string() {
+        let report = "\
+-rwsr-xr-x root/root   1 2026-09-01 12:00 squashfs-root/setuid
+drwxrwxrwt root/root   2 2026-09-01 12:00 squashfs-root/sticky
+crw-rw---- root/root   3 2026-09-01 12:00 squashfs-root/dev
+";
+        assert_eq!(unsquashfs_listing_entries(report), 3);
+    }
+
+    /// And a line that merely looks wordy is not an entry. Without this
+    /// the counter could be keying on length alone.
+    #[test]
+    fn prose_is_not_an_inode() {
+        let report = "unsquashfs: could not open the image\nabandoning\n";
+        assert_eq!(unsquashfs_listing_entries(report), 0);
     }
 }
