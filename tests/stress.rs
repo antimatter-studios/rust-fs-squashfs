@@ -2,14 +2,15 @@
 //! chains, max-length names, empty files/dirs, and malformed-image refusal.
 //!
 //! The oracle-built cases (many files, deep trees, long names, all five
-//! compressors) need `mksquashfs` and are `#[ignore]`-gated. Run them with:
+//! compressors) build their images with `mksquashfs` in the harness
+//! guest, which puts this file in the `oracle` tier:
 //!
 //! ```sh
-//! cargo test --release --test stress -- --ignored
+//! chore test:oracle
 //! ```
 //!
-//! The committed-fixture and malformed-image cases run under a plain
-//! `cargo test` (no external tools).
+//! The committed-fixture and malformed-image cases in the same file need
+//! no tool; the tiers are per file, so they ride along.
 
 mod common;
 

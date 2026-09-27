@@ -85,4 +85,46 @@ bash "$BUDGET" \
     --max-bytes "$MAX_BYTES" \
     --label "$LABEL" \
     -- "$@" || status=$?
+
+# NOTHING SKIPS, AND THE GATE IS HERE SO IT CANNOT BE FORGOTTEN.
+#
+# A skipped test reads exactly like a passing one. `cargo test` prints its
+# ignored count and exits 0, so a tier that stopped running half of itself is
+# a green line -- and the executed-test floor cannot see it either, because a
+# floor has margin and one more `#[ignore]` is well inside it.
+#
+# `tests/test_contract.rs` refuses an `#[ignore]` in the SOURCES, which is the
+# same rule read at the other end. Both are kept: the source guard names the
+# file to edit, and this one catches an ignore that arrives any other way --
+# a `--ignored` flag, a cfg-gated attribute, a dependency's own tests.
+#
+# IN tier.sh RATHER THAN A SCRIPT EACH TASK CALLS, deliberately. A per-tier
+# line in chores.yml is a line a new tier can be added without; every tier
+# goes through here by construction, including the ones not written yet.
+#
+# ONLY WHEN THE RUN OTHERWISE PASSED. A command that already failed has a
+# better story to tell than its ignored count, and overwriting its status
+# would bury it.
+LOG="$REPO/tmp/logs/$LOG_NAME.log"
+if [ "$status" -eq 0 ] && [ -f "$LOG" ]; then
+    # `test result: ok. 37 passed; 0 failed; 2 ignored; ...`, one line per test
+    # binary. Anchored at the start of a line so a tool's output that happens
+    # to quote the phrase cannot be read as a verdict, and the count is taken
+    # from the field BEFORE the word rather than by position, so a future
+    # libtest that reorders the summary does not silently read zero.
+    ignored="$(awk '
+        /^test result:/ {
+            for (i = 1; i <= NF; i++) if ($i == "ignored;" || $i == "ignored") sum += $(i - 1)
+        }
+        END { print sum + 0 }' "$LOG")"
+    if [ "$ignored" -gt 0 ]; then
+        echo "::error::$ignored test(s) ignored in the $LOG_NAME tier; a skipped test is not a passing one"
+        echo "tier.sh: the $LOG_NAME tier reported $ignored ignored test(s)." >&2
+        echo "         A test that cannot run FAILS, naming the task that would" >&2
+        echo "         provide what it needed. A suite that quietly declines to" >&2
+        echo "         run is indistinguishable from one that passes." >&2
+        echo "         The log is $LOG." >&2
+        exit 66
+    fi
+fi
 exit "$status"

@@ -94,8 +94,22 @@ if [ "${#args[@]}" -eq 0 ] && [ "$tier" != unit ]; then
     exit 1
 fi
 
+# EVERY CRATE IN THE TREE, NOT JUST THE ONE. `tests/support` is a path
+# dev-dependency rather than a workspace member, so `cargo test` and
+# `cargo test --workspace` both leave its tests out -- and it had three,
+# one of them carrying a comment explaining that a test is the only thing
+# that would notice its rule inverting. None of them had ever run in CI.
+# Named explicitly so a crate added later is a deliberate line here
+# rather than a suite nobody notices is absent; tests/test_contract.rs
+# fails if a crate in the tree is missing from this list.
+#
+# `fuzz` is deliberately not among them: it is its own package on its own
+# toolchain, built by .github/workflows/fuzz.yml, and Cargo.toml excludes
+# it from the published crate for the same reason.
+CRATES=(-p am-fs-squashfs -p fs-squashfs-test-support)
+
 case "$tier" in
-    unit) printf '%s\n' --lib --bins "${args[@]}" -- --skip needs_host:: ;;
-    all) printf '%s\n' --lib --bins "${args[@]}" ;;
+    unit) printf '%s\n' "${CRATES[@]}" --lib --bins "${args[@]}" -- --skip needs_host:: ;;
+    all) printf '%s\n' "${CRATES[@]}" --lib --bins "${args[@]}" ;;
     *) printf '%s\n' "${args[@]}" ;;
 esac

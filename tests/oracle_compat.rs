@@ -6,11 +6,13 @@
 //! proves the codec dispatch (gzip / xz / lz4 / zstd / lzo / lzma) decodes real
 //! `mksquashfs` output, not just our own synthetic streams.
 //!
-//! Every test here is `#[ignore]`-gated so `cargo test` stays green on a
-//! host without `squashfs-tools`. Run them with:
+//! Every tool call here happens in the harness guest, so this file is in
+//! the `oracle` tier. Nothing is gated on a tool being present on the
+//! host -- there is none to find, and a test that decided that and
+//! passed would be the silent green this suite exists to refuse:
 //!
 //! ```sh
-//! cargo test --release -- --ignored
+//! chore test:oracle
 //! ```
 
 mod common;
