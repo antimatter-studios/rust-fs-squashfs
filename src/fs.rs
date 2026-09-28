@@ -493,13 +493,43 @@ impl Filesystem {
     /// Resolve a `/`-separated path from the root. Symlinks are returned
     /// as-is (not followed) — FSKit/the kernel handles symlink expansion
     /// via `readlink`.
+    ///
+    /// A convenience over [`lookup_path_bytes`], which is where the
+    /// resolution actually happens. `&str` is a fine way to spell a
+    /// path and a poor way to REQUIRE one: see that method for why.
+    ///
+    /// [`lookup_path_bytes`]: Self::lookup_path_bytes
     pub fn lookup_path(&self, path: &str) -> Result<Inode> {
+        self.lookup_path_bytes(path.as_bytes())
+    }
+
+    /// Resolve a `/`-separated path given as bytes.
+    ///
+    /// THIS IS THE REAL ONE, and the `&str` wrapper above is the
+    /// convenience. SquashFS directory entry names are raw bytes with
+    /// no encoding rule — the format has no field that could carry one
+    /// — so a name is not text until somebody decides what encoding to
+    /// read it in, and this crate never decides.
+    ///
+    /// A path that is not valid UTF-8 is therefore ORDINARY rather than
+    /// hostile: any image built on a box with a non-UTF-8 locale holds
+    /// them, as does anything copied off a legacy Windows or Mac volume.
+    /// Requiring `&str` made those files visible, listable and
+    /// unopenable (#67).
+    ///
+    /// Components are compared byte for byte against
+    /// [`DirEntry::name`], which is what the on-disk entry holds, so a
+    /// name handed out by [`read_dir`] always resolves when handed back.
+    ///
+    /// [`DirEntry::name`]: crate::dir::DirEntry::name
+    /// [`read_dir`]: Self::read_dir
+    pub fn lookup_path_bytes(&self, path: &[u8]) -> Result<Inode> {
         let mut node = self.root_inode()?;
-        for comp in path.split('/').filter(|c| !c.is_empty()) {
+        for comp in path.split(|&b| b == b'/').filter(|c| !c.is_empty()) {
             if !node.is_dir() {
                 return Err(Error::NotADirectory);
             }
-            node = self.lookup(&node, comp.as_bytes())?;
+            node = self.lookup(&node, comp)?;
         }
         Ok(node)
     }

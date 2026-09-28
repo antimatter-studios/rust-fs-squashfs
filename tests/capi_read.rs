@@ -529,16 +529,21 @@ fn last_err_string() -> String {
         .into_owned()
 }
 
-/// `getxattr` decodes two strings, and a refusal names the one it
-/// refused.
+/// `getxattr` takes two byte arguments, and a refusal names the one
+/// that failed.
 ///
-/// Both arguments went through one decoder whose messages said "path",
-/// so an undecodable attribute *name* was reported as
-/// `path is not valid UTF-8` beside a path that was perfectly good. The
-/// errno was right and the noun sent the caller to the wrong argument.
-/// The path half is the control: it must still say "path". See #69.
+/// Both arguments once went through one decoder whose messages said
+/// "path", so a bad attribute *name* was reported as
+/// `path is not valid UTF-8` beside a path that was perfectly good: the
+/// errno was right and the noun sent the caller to the wrong argument
+/// (#69).
+///
+/// Neither argument is decoded any more (#67), so what is asserted is
+/// the same protection under the new contract: a name that is not UTF-8
+/// is simply an attribute that is not set, a path that is not UTF-8 is
+/// simply a file that is not there, and the message says which.
 #[test]
-fn getxattr_names_the_argument_it_could_not_decode() {
+fn getxattr_names_the_argument_that_failed() {
     let fs = mount_path();
     let good = CString::new("/hello.txt").unwrap();
     // "user.caf\xe9" -- the same latin-1 byte as `undecodable_path`.
@@ -549,14 +554,21 @@ fn getxattr_names_the_argument_it_could_not_decode() {
 
     let rc =
         unsafe { fs_squashfs_getxattr(fs, good.as_ptr(), bad.as_ptr(), std::ptr::null_mut(), 0) };
-    assert_eq!(rc, -1, "an undecodable xattr name was accepted");
-    assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    assert_eq!(rc, -1, "an attribute that is not set was answered");
+    assert_eq!(fs_squashfs_last_errno(), 2 /* ENOENT */);
     let msg = last_err_string();
     assert!(
-        msg.starts_with("xattr name is not valid UTF-8"),
-        "the refusal did not name the xattr name argument: {msg}"
+        msg.contains("is not set"),
+        "a name in a namespace the format has, on a file that exists, should be \
+         reported as unset rather than as a bad argument: {msg}"
+    );
+    assert!(
+        msg.starts_with("getxattr /hello.txt"),
+        "the refusal did not name the path it looked on: {msg}"
     );
 
+    // AND THE OTHER ARGUMENT. A path that names no file must not be
+    // reported against the attribute name, which is what #69 was about.
     let bad_path: Vec<std::ffi::c_char> = b"/caf\xe9.txt\0"
         .iter()
         .map(|&b| std::ffi::c_char::from_ne_bytes([b]))
@@ -572,10 +584,127 @@ fn getxattr_names_the_argument_it_could_not_decode() {
         )
     };
     assert_eq!(rc, -1);
+    assert_eq!(fs_squashfs_last_errno(), 2 /* ENOENT */);
     let msg = last_err_string();
     assert!(
-        msg.starts_with("path is not valid UTF-8"),
-        "the path refusal stopped naming the path: {msg}"
+        msg.starts_with("getxattr /caf"),
+        "the refusal stopped naming the path: {msg}"
     );
+    assert!(
+        !msg.contains("user.x"),
+        "the path was missing and the message blamed the attribute name: {msg}"
+    );
+    unsafe { fs_squashfs_umount(fs) };
+}
+
+// ===========================================================================
+// Names that are not UTF-8 (#67)
+// ===========================================================================
+
+/// A tree with one name that is not valid UTF-8, beside one that is.
+///
+/// `caf\xe9.txt` is `café.txt` as a latin-1 machine would write it, and
+/// `\xe9` on its own is not a legal UTF-8 sequence. SquashFS directory
+/// entry names are raw bytes with no encoding rule, so this is an
+/// ordinary image rather than a hostile one: any box with a non-UTF-8
+/// locale produces them.
+const NON_UTF8_TREE: &str = r#"
+printf 'latin1\n' > "$(printf 'caf\xe9.txt')"
+printf 'ascii\n' > plain.txt
+mkdir -p "$(printf 'dir\xff')"
+printf 'nested\n' > "$(printf 'dir\xff')/inner.txt"
+"#;
+
+/// Every name `dir_next` hands back can be handed straight back to
+/// `stat`.
+///
+/// This is the issue's "done looks like", and it is the shape a caller
+/// actually uses: walk a directory, stat each entry. The ABI reported a
+/// name it then refused, so the entries whose names are not UTF-8 were
+/// visible, listed, and unopenable — with no byte-oriented entry point
+/// to work around it.
+#[test]
+fn every_name_dir_next_reports_can_be_handed_back_to_stat() {
+    use fs_squashfs_test_support::{mksquashfs_from_guest_tree, ScratchDir};
+
+    let scratch = ScratchDir::new("capi-non-utf8");
+    let image = scratch.join("non-utf8.sqfs");
+    let made = mksquashfs_from_guest_tree(
+        &image,
+        NON_UTF8_TREE,
+        &["-comp", "gzip", "-noappend", "-no-progress"],
+    );
+    assert!(
+        made.status.success(),
+        "mksquashfs on the non-UTF-8 tree failed: {}{}",
+        String::from_utf8_lossy(&made.stdout),
+        String::from_utf8_lossy(&made.stderr)
+    );
+
+    let path = CString::new(image.to_str().expect("utf-8 image path")).unwrap();
+    let fs = unsafe { fs_squashfs_mount(path.as_ptr()) };
+    assert!(!fs.is_null(), "mount failed: {}", last_err_string());
+
+    let root = CString::new("/").unwrap();
+    let iter = unsafe { fs_squashfs_dir_open(fs, root.as_ptr()) };
+    assert!(!iter.is_null(), "dir_open failed: {}", last_err_string());
+
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    loop {
+        let de = unsafe { fs_squashfs_dir_next(iter) };
+        if de.is_null() {
+            break;
+        }
+        let de = unsafe { &*de };
+        // The name as the ABI handed it over: the bytes it declared.
+        // `.to_ne_bytes()[0]`, not `as u8`: `c_char` is `i8` on x86_64
+        // and Apple targets and `u8` on aarch64-linux, so `as u8` is a
+        // real cast on one and a no-op clippy refuses on the other
+        // (#78). This is the same conversion on both.
+        let name: Vec<u8> = de.name[..de.name_len as usize]
+            .iter()
+            .map(|&c| c.to_ne_bytes()[0])
+            .collect();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        seen.push(name);
+    }
+    unsafe { fs_squashfs_dir_close(iter) };
+
+    assert_eq!(
+        seen.len(),
+        3,
+        "expected three entries, got {:?}",
+        seen.iter()
+            .map(|n| String::from_utf8_lossy(n))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        seen.iter().any(|n| std::str::from_utf8(n).is_err()),
+        "no entry in this image has a name that is not UTF-8, so the test proves nothing: {:?}",
+        seen.iter()
+            .map(|n| String::from_utf8_lossy(n))
+            .collect::<Vec<_>>()
+    );
+
+    // EVERY ONE OF THEM, handed straight back. A caller composing a
+    // path from a name this library just gave it must be able to reach
+    // the file.
+    for name in &seen {
+        let mut path_bytes = b"/".to_vec();
+        path_bytes.extend_from_slice(name);
+        let c_path = CString::new(path_bytes.clone()).expect("no interior NUL");
+        let mut st = unsafe { std::mem::zeroed::<fs_squashfs_attr_t>() };
+        let rc = unsafe { fs_squashfs_stat(fs, c_path.as_ptr(), &mut st) };
+        assert_eq!(
+            rc,
+            0,
+            "stat refused {:?}, a name fs_squashfs_dir_next had just reported: {}",
+            String::from_utf8_lossy(name),
+            last_err_string()
+        );
+    }
+
     unsafe { fs_squashfs_umount(fs) };
 }

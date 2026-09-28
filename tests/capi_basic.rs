@@ -503,17 +503,24 @@ fn undecodable_path() -> Vec<c_char> {
         .collect()
 }
 
-/// `stat` refuses a path it cannot decode rather than answering about
-/// the root.
+/// A non-UTF-8 path that names no file is `ENOENT`, and never the root.
 ///
+/// TWO CONTRACTS, ONE TEST. The first is #43's, and it has not changed:
 /// `cstr_to_str` used to return `""` for anything undecodable, and the
-/// empty string is not an error downstream: `lookup_path` splits it
+/// empty string is not an error downstream — `lookup_path` splits it
 /// into one empty component, drops it, and returns the root inode as a
 /// successful lookup. So the call answered 0 and filled `attr` with the
-/// root directory's inode number, mode, size and mtime — indistinguishable
-/// from a real hit.
+/// root directory's inode number, mode, size and mtime, indistinguishable
+/// from a real hit. That must never come back.
+///
+/// The second is #67's, and it replaces the `EINVAL` this test used to
+/// assert. These bytes are not "undecodable" any more: names are bytes,
+/// the path is compared byte for byte, and this one simply names no file
+/// in the fixture. `ENOENT` is the honest answer — the caller's argument
+/// was fine, the file is not there. `EINVAL` would now be wrong, and
+/// would send a caller looking at its own string handling.
 #[test]
-fn stat_refuses_a_path_it_cannot_decode_rather_than_reporting_the_root() {
+fn a_non_utf8_path_that_names_no_file_is_not_found_and_is_not_the_root() {
     let fs = mount_fixture();
     let path = undecodable_path();
     let mut attr = unsafe { std::mem::zeroed::<fs_squashfs_attr_t>() };
@@ -529,9 +536,14 @@ fn stat_refuses_a_path_it_cannot_decode_rather_than_reporting_the_root() {
     let rc = unsafe { fs_squashfs_stat(fs, path.as_ptr(), &mut attr) };
     assert_eq!(
         rc, -1,
-        "an undecodable path was answered as a successful stat"
+        "a path naming no file was answered as a successful stat"
     );
-    assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    assert_eq!(
+        fs_squashfs_last_errno(),
+        2, /* ENOENT */
+        "refused, but as a bad argument rather than a missing file: {}",
+        last_err_str()
+    );
     assert_ne!(
         attr.inode, root_attr.inode,
         "the root inode was reported for a path that names no file"
@@ -540,29 +552,29 @@ fn stat_refuses_a_path_it_cannot_decode_rather_than_reporting_the_root() {
     unsafe { fs_squashfs_umount(fs) };
 }
 
-/// The directory iterator likewise: an undecodable path is not the root
-/// listing.
+/// The directory iterator likewise: a path naming no directory is not
+/// the root listing.
 ///
 /// This is the one that hurts most in practice — a caller walking a
 /// tree, composing paths from names this driver handed back, gets the
 /// root's entries again and walks in a circle.
 #[test]
-fn dir_open_refuses_a_path_it_cannot_decode() {
+fn dir_open_on_a_non_utf8_path_that_names_nothing_is_not_the_root_listing() {
     let fs = mount_fixture();
     let path = undecodable_path();
     let iter = unsafe { fs_squashfs_dir_open(fs, path.as_ptr()) };
     assert!(
         iter.is_null(),
-        "an undecodable path opened a directory iterator"
+        "a path naming no directory opened an iterator"
     );
-    assert_eq!(fs_squashfs_last_errno(), 22 /* EINVAL */);
+    assert_eq!(fs_squashfs_last_errno(), 2 /* ENOENT */);
     unsafe { fs_squashfs_umount(fs) };
 }
 
-/// And reading a file, where the old failure at least failed — but for
-/// the wrong reason, naming the wrong object.
+/// And reading a file, which fails for the reason it should: the file
+/// is not there.
 #[test]
-fn read_file_refuses_a_path_it_cannot_decode_with_einval() {
+fn read_file_on_a_non_utf8_path_that_names_nothing_is_not_found() {
     let fs = mount_fixture();
     let path = undecodable_path();
     let mut buf = [0u8; 16];
@@ -575,11 +587,11 @@ fn read_file_refuses_a_path_it_cannot_decode_with_einval() {
             buf.len() as u64,
         )
     };
-    assert!(n < 0, "an undecodable path read {n} bytes");
+    assert!(n < 0, "a path naming no file read {n} bytes");
     assert_eq!(
         fs_squashfs_last_errno(),
-        22, /* EINVAL */
-        "refused, but as something other than a bad argument: {}",
+        2, /* ENOENT */
+        "refused, but as something other than a missing file: {}",
         last_err_str()
     );
     unsafe { fs_squashfs_umount(fs) };

@@ -119,48 +119,21 @@ pub extern "C" fn fs_squashfs_last_error() -> *const c_char {
 pub extern "C" fn fs_squashfs_last_errno() -> c_int {
     LAST_ERRNO.with(|c| *c.borrow())
 }
-
-/// Decode a C string as a path, or refuse it.
+/// A NUL-terminated argument as `&str`, for the one path that is not an
+/// in-image name.
 ///
-/// This used to hand back `""` for anything it could not decode, and
-/// the empty string is not an error anywhere downstream: `lookup_path`
-/// splits it into one empty component, drops that, and returns the root
-/// inode as a successful lookup. So `fs_squashfs_stat(fs, "\xff\xfe/passwd")`
-/// answered 0 and filled `attr` with the root directory's inode number,
-/// mode, size and mtime, and `fs_squashfs_dir_open` handed back an
-/// iterator over the root listing. A caller had no way to tell either
-/// from a real hit.
+/// `fs_squashfs_mount` takes a path on the HOST filesystem and hands it
+/// to `FileDevice::open`, which wants a `Path`. Every other entry point
+/// takes a path INSIDE the image and goes through [`cstr_to_bytes`]
+/// instead, because those are compared against names the image holds
+/// and names are bytes (#67).
 ///
-/// It is reachable rather than theoretical. SquashFS names are raw
-/// bytes with no encoding rule — this crate carries them as `Vec<u8>`
-/// for exactly that reason — so images built on Linux routinely hold
-/// names that are not valid UTF-8, and a caller composing a path from a
-/// name this driver handed it got the root back. Worse, the display
-/// sites use `from_utf8_lossy`, so a name that has been through one has
-/// its invalid bytes replaced by U+FFFD and no longer matches anything:
-/// the caller asks for a file that does exist, spelled slightly wrong,
-/// and is told about the root instead of `ENOENT`.
-///
-/// The error is `EINVAL` because the argument is the problem, and the
-/// message quotes the undecodable bytes so a caller can see which of
-/// its paths this was.
-///
-/// Refusing is the narrow fix. The wider one is to take paths as bytes
-/// and match `DirEntry::name` byte for byte, which would make such a
-/// name *addressable* rather than merely non-fatal; that is an ABI
-/// change and is filed separately as #67.
-///
-/// `what` names the argument in both messages. `fs_squashfs_getxattr`
-/// decodes an attribute name through this too, and a hardcoded "path"
-/// sent a caller with a bad name looking at a good path (#69).
+/// The two are different questions and it is worth them looking
+/// different: a host path that does not decode is a portability problem
+/// for whoever opens the file, and an in-image name that does not decode
+/// is not a problem at all.
 unsafe fn cstr_to_path<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
     if p.is_null() {
-        // NULL is refused here rather than at each entry point, and it
-        // sets the error slot for the same reason the undecodable case
-        // does: every caller of this returns a failure value straight
-        // away, so whatever it left in the slot is what the caller
-        // reads. Returning `None` silently would answer -1 with errno
-        // still 0.
         set_err_msg(&format!("null {what}"), errno::EINVAL);
         return None;
     }
@@ -178,6 +151,47 @@ unsafe fn cstr_to_path<'a>(p: *const c_char, what: &str) -> Option<&'a str> {
             None
         }
     }
+}
+
+/// The bytes of a NUL-terminated argument, not decoded.
+///
+/// EVERY IN-IMAGE NAME COMES THROUGH HERE. SquashFS directory entry
+/// names are raw bytes and the format has no field that could say what
+/// encoding they are in, so this ABI does not decide: it compares what
+/// the caller passed against what the image holds, byte for byte.
+///
+/// This is what `fs_squashfs_dir_next` already did in the other
+/// direction — it fills `name` from the raw bytes — and the asymmetry
+/// was the bug. The ABI reported a name it then refused to accept, so a
+/// caller that walked a directory and stat'd each entry got `EINVAL` on
+/// exactly the entries this same library had just handed it, with no
+/// byte-oriented entry point to work around it (#67).
+///
+/// Source-compatible for every caller passing UTF-8, because UTF-8 is a
+/// byte string too — and it now also works for callers passing anything
+/// else, which is what the format allows.
+///
+/// NULL is still refused here rather than at each entry point, and it
+/// sets the error slot for the same reason: every caller of this
+/// returns a failure value straight away, so whatever it left in the
+/// slot is what the caller reads. Returning `None` silently would
+/// answer -1 with errno still 0.
+/// A byte path as text, FOR A MESSAGE ONLY.
+///
+/// `from_utf8_lossy` is exactly wrong for a lookup — it maps distinct
+/// names onto one, so two files become indistinguishable — and exactly
+/// right for an error string, which a person reads and nothing compares.
+/// Never feed the result back into a lookup.
+fn shown(path: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(path)
+}
+
+unsafe fn cstr_to_bytes<'a>(p: *const c_char, what: &str) -> Option<&'a [u8]> {
+    if p.is_null() {
+        set_err_msg(&format!("null {what}"), errno::EINVAL);
+        return None;
+    }
+    Some(unsafe { CStr::from_ptr(p) }.to_bytes())
 }
 
 // ===========================================================================
@@ -199,7 +213,9 @@ pub struct fs_squashfs_fs_t {
 /// A path `fs_squashfs_read_file` resolved, and the file's block map.
 #[derive(Clone)]
 struct ResolvedFile {
-    path: String,
+    /// The path as the caller spelled it, in bytes: names are bytes
+    /// and the cache key must be the same thing the lookup compares.
+    path: Vec<u8>,
     inode: Arc<Inode>,
     block_offsets: Arc<Vec<u64>>,
 }
@@ -214,7 +230,7 @@ impl fs_squashfs_fs_t {
 
     /// `path` resolved, with its block map, from the last read's when it
     /// is the same path.
-    fn resolve_for_read(&self, path: &str) -> crate::error::Result<ResolvedFile> {
+    fn resolve_for_read(&self, path: &[u8]) -> crate::error::Result<ResolvedFile> {
         let mut last = self
             .last_read_path
             .lock()
@@ -226,7 +242,7 @@ impl fs_squashfs_fs_t {
         }
         #[cfg(test)]
         READ_PATH_LOOKUPS.with(|n| n.set(n.get() + 1));
-        let inode = self.fs.lookup_path(path)?;
+        let inode = self.fs.lookup_path_bytes(path)?;
         let block_offsets = if inode.is_regular_file() {
             Arc::new(self.fs.block_offsets(&inode))
         } else {
@@ -562,17 +578,17 @@ pub unsafe extern "C" fn fs_squashfs_stat(
                 return rc;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
+            let Some(path) = (unsafe { cstr_to_bytes(path, "path") }) else {
                 return -1;
             };
             let attr = unsafe { &mut *attr };
             match fs
-                .lookup_path(path)
+                .lookup_path_bytes(path)
                 .and_then(|inode| fill_attr(attr, fs, &inode))
             {
                 Ok(()) => 0,
                 Err(e) => {
-                    set_err_from(&e, &format!("stat {path}"));
+                    set_err_from(&e, &format!("stat {}", shown(path)));
                     -1
                 }
             }
@@ -663,25 +679,28 @@ pub unsafe extern "C" fn fs_squashfs_dir_open(
                 return std::ptr::null_mut();
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
+            let Some(path) = (unsafe { cstr_to_bytes(path, "path") }) else {
                 return std::ptr::null_mut();
             };
 
-            let inode = match fs.lookup_path(path) {
+            let inode = match fs.lookup_path_bytes(path) {
                 Ok(i) => i,
                 Err(e) => {
-                    set_err_from(&e, &format!("dir_open {path}"));
+                    set_err_from(&e, &format!("dir_open {}", shown(path)));
                     return std::ptr::null_mut();
                 }
             };
             if !inode.is_dir() {
-                set_err_msg(&format!("dir_open {path}: not a directory"), errno::ENOTDIR);
+                set_err_msg(
+                    &format!("dir_open {}: not a directory", shown(path)),
+                    errno::ENOTDIR,
+                );
                 return std::ptr::null_mut();
             }
             let entries = match fs.read_dir(&inode) {
                 Ok(es) => es.iter().map(dir_entry_to_abi).collect(),
                 Err(e) => {
-                    set_err_from(&e, &format!("read directory {path}"));
+                    set_err_from(&e, &format!("read directory {}", shown(path)));
                     return std::ptr::null_mut();
                 }
             };
@@ -745,21 +764,21 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
             }
             let handle = unsafe { &*fs };
             let fs = &handle.fs;
-            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
+            let Some(path) = (unsafe { cstr_to_bytes(path, "path") }) else {
                 return -1;
             };
 
             let resolved = match handle.resolve_for_read(path) {
                 Ok(i) => i,
                 Err(e) => {
-                    set_err_from(&e, &format!("read_file {path}"));
+                    set_err_from(&e, &format!("read_file {}", shown(path)));
                     return -1;
                 }
             };
             let inode = &resolved.inode;
             if !inode.is_regular_file() {
                 set_err_msg(
-                    &format!("read_file {path}: not a regular file"),
+                    &format!("read_file {}: not a regular file", shown(path)),
                     errno::EINVAL,
                 );
                 return -1;
@@ -771,7 +790,7 @@ pub unsafe extern "C" fn fs_squashfs_read_file(
             match fs.read_file_with_offsets(inode, &resolved.block_offsets, offset, out) {
                 Ok(n) => n as i64,
                 Err(e) => {
-                    set_err_from(&e, &format!("read_file {path}"));
+                    set_err_from(&e, &format!("read_file {}", shown(path)));
                     -1
                 }
             }
@@ -798,26 +817,29 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
                 return rc;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
+            let Some(path) = (unsafe { cstr_to_bytes(path, "path") }) else {
                 return -1;
             };
 
-            let inode = match fs.lookup_path(path) {
+            let inode = match fs.lookup_path_bytes(path) {
                 Ok(i) => i,
                 Err(e) => {
-                    set_err_from(&e, &format!("readlink {path}"));
+                    set_err_from(&e, &format!("readlink {}", shown(path)));
                     return -1;
                 }
             };
             if !inode.is_symlink() {
-                set_err_msg(&format!("readlink {path}: not a symlink"), errno::EINVAL);
+                set_err_msg(
+                    &format!("readlink {}: not a symlink", shown(path)),
+                    errno::EINVAL,
+                );
                 return -1;
             }
             let target = &inode.symlink_target;
             // The result is the length, so it has to fit the return type.
             let Ok(len) = c_int::try_from(target.len()) else {
                 set_err_msg(
-                    &format!("readlink {path}: target of {} bytes", target.len()),
+                    &format!("readlink {}: target of {} bytes", shown(path), target.len()),
                     errno::ERANGE,
                 );
                 return -1;
@@ -827,7 +849,10 @@ pub unsafe extern "C" fn fs_squashfs_readlink(
             let needed = target.len() + 1;
             if bufsize < needed {
                 set_err_msg(
-                    &format!("readlink {path}: buffer of {bufsize} bytes, {needed} needed"),
+                    &format!(
+                        "readlink {}: buffer of {bufsize} bytes, {needed} needed",
+                        shown(path)
+                    ),
                     errno::ERANGE,
                 );
                 return -1;
@@ -882,20 +907,20 @@ pub unsafe extern "C" fn fs_squashfs_listxattr(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
+            let Some(path) = (unsafe { cstr_to_bytes(path, "path") }) else {
                 return -1;
             };
-            let inode = match fs.lookup_path(path) {
+            let inode = match fs.lookup_path_bytes(path) {
                 Ok(i) => i,
                 Err(e) => {
-                    set_err_from(&e, &format!("listxattr {path}"));
+                    set_err_from(&e, &format!("listxattr {}", shown(path)));
                     return -1;
                 }
             };
             let entries = match fs.list_xattrs(&inode) {
                 Ok(v) => v,
                 Err(e) => {
-                    set_err_from(&e, &format!("listxattr {path}"));
+                    set_err_from(&e, &format!("listxattr {}", shown(path)));
                     return -1;
                 }
             };
@@ -945,30 +970,30 @@ pub unsafe extern "C" fn fs_squashfs_getxattr(
                 return -1;
             }
             let fs = unsafe { &(*fs).fs };
-            let Some(path) = (unsafe { cstr_to_path(path, "path") }) else {
+            let Some(path) = (unsafe { cstr_to_bytes(path, "path") }) else {
                 return -1;
             };
-            let Some(name) = (unsafe { cstr_to_path(name, "xattr name") }) else {
+            let Some(name) = (unsafe { cstr_to_bytes(name, "xattr name") }) else {
                 return -1;
             };
-            let inode = match fs.lookup_path(path) {
+            let inode = match fs.lookup_path_bytes(path) {
                 Ok(i) => i,
                 Err(e) => {
-                    set_err_from(&e, &format!("getxattr {path}"));
+                    set_err_from(&e, &format!("getxattr {}", shown(path)));
                     return -1;
                 }
             };
-            let value = match fs.get_xattr(&inode, name.as_bytes()) {
+            let value = match fs.get_xattr(&inode, name) {
                 Ok(Some(v)) => v,
                 Ok(None) => {
                     set_err_msg(
-                        &format!("getxattr {path}: {name} is not set"),
+                        &format!("getxattr {}: {} is not set", shown(path), shown(name)),
                         errno::ENOENT,
                     );
                     return -1;
                 }
                 Err(e) => {
-                    set_err_from(&e, &format!("getxattr {path} {name}"));
+                    set_err_from(&e, &format!("getxattr {} {}", shown(path), shown(name)));
                     return -1;
                 }
             };
