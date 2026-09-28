@@ -298,43 +298,21 @@ fn no_test_announces_a_skip() {
         }
     }
 
-    // THE ONE KNOWN EXCEPTION, NAMED, AND COUNTED.
+    // NO EXCEPTIONS, AND THERE WAS ONE UNTIL #117.
     //
-    // `oracle_xz_bcj_x86_reads_real_machine_code` needs real x86 machine
-    // code, and #117 is why that is not simply fixable: the BCJ x86 filter
-    // is only KEPT when it makes the block smaller, which real branch-dense
-    // code does and a synthetic imitation does not — measured on #52, along
-    // with a 32-bit firmware blob that also failed. So the input is
-    // scavenged from the host's own executables and there is none to
-    // scavenge on an aarch64 machine.
-    //
-    // It is listed rather than tolerated, and the list is asserted to be
-    // EXACTLY this one entry. A second skip cannot join it quietly: it
-    // would fail this test for being unlisted, and removing this one when
-    // #117 lands will fail it for being listed and absent. An exception
-    // that can grow is not an exception, it is the rule coming back.
-    const KNOWN: [&str; 1] = ["oracle_compat.rs"];
-    let (excepted, unexpected): (Vec<_>, Vec<_>) = offenders
-        .iter()
-        .partition(|o| KNOWN.iter().any(|k| o.contains(k)));
+    // `oracle_xz_bcj_x86_reads_real_machine_code` was listed here: it
+    // needed real x86 machine code and scavenged it from the host's own
+    // executables, so on an aarch64 machine it printed a line and
+    // passed. The list asserted its own length so the entry could not be
+    // joined quietly and could not be forgotten once the reason went
+    // away -- which is what happened: the code is a fixture the guest
+    // stages now, the test runs everywhere, and the exception is gone
+    // with it.
     assert!(
-        unexpected.is_empty(),
+        offenders.is_empty(),
         "these print a skip notice. A test never skips on a missing tool or \
          fixture; fail instead (fixture / oracle do):\n{}",
-        unexpected
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    assert_eq!(
-        excepted.len(),
-        KNOWN.len(),
-        "the known-skip list names {} file(s) and {} were found. If #117 has \
-         landed, delete the entry; if a file was renamed, this is the reminder \
-         that the exception moved with it.",
-        KNOWN.len(),
-        excepted.len()
+        offenders.join("\n")
     );
 }
 

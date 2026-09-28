@@ -55,6 +55,31 @@ export CARGO_HOME="$RUST_ROOT/cargo"
 # version every currently-passing assertion was actually validated
 # against. Moving to 4.7.x is a deliberate change: the tools' output
 # wording is what several tests read, so expect to re-check them.
+# THE x86-64 MACHINE-CODE FIXTURE, AND WHY IT IS FETCHED RATHER THAN MADE.
+#
+# `oracle_xz_bcj_x86_reads_real_machine_code` needs a payload the x86 BCJ
+# filter WINS on, because mksquashfs keeps a filtered block only when the
+# filter made it smaller and the test asserts it was kept. A synthetic
+# instruction stream makes every filter lose -- measured on #52 -- and so
+# did a 32-bit firmware blob. Only real branch-dense linked code works.
+#
+# It used to be scavenged from the host's own /bin/bash, which meant the
+# test SKIPPED on every aarch64 machine and, where it did run, ran against
+# whatever that machine happened to have. Nothing executes the payload, so
+# the architecture of the MACHINE is irrelevant and only the architecture
+# of the FILE matters -- which makes it a fixture, fetched once here,
+# identical everywhere (#117).
+#
+# Pinned by version AND by digest, and never redistributed from this
+# repository: the same posture as the sibling drivers' downloaded
+# fixtures. Measured on this exact binary: 1,024,000 bytes filtered
+# against 1,069,056 plain, so the filter is kept by 4.2%.
+X86_DEB_URL=http://deb.debian.org/debian/pool/main/p/perl/perl-base_5.36.0-7+deb12u3_amd64.deb
+X86_DEB_SHA256=8ec874926e211807cde71e1b0a2311d2534ab3539dffcb2c8553633f542efc1a
+X86_DEB_MEMBER=./usr/bin/perl
+X86_FIXTURE=/var/lib/fs-squashfs-fixtures/x86_64-machine-code.bin
+X86_FIXTURE_PIN=perl-base_5.36.0-7+deb12u3_amd64
+
 SQUASHFS_TOOLS_PIN=4.6.1
 SQUASHFS_TOOLS_REPO=https://github.com/plougher/squashfs-tools.git
 SQUASHFS_TOOLS_SRC=/var/lib/fs-squashfs-tools
@@ -210,5 +235,41 @@ fi
     --component rustfmt --component clippy --profile minimal >/dev/null
 "$CARGO_HOME/bin/rustup" default "$toolchain" >/dev/null
 "$CARGO_HOME/bin/cargo" --version
+
+# The x86-64 fixture, at the pinned version. Idempotent by a stamp, like
+# squashfs-tools above: an unchanged pin costs a `cat`.
+#
+# THE DIGEST IS CHECKED BEFORE ANYTHING IS EXTRACTED. A mirror that served
+# a different build would give a payload the filter might lose on, and the
+# test would then fail for a reason that has nothing to do with this crate.
+x86_stamp="$(dirname "$X86_FIXTURE")/pin"
+if [ "$(cat "$x86_stamp" 2>/dev/null || true)" != "$X86_FIXTURE_PIN" ]; then
+    echo "vm-setup: fetching the x86-64 machine-code fixture ($X86_FIXTURE_PIN)"
+    work="$(mktemp -d /var/tmp/fs-squashfs-x86.XXXXXX)"
+    deb="$work/$(basename "$X86_DEB_URL")"
+    curl -fsSL --max-time 300 -o "$deb" "$X86_DEB_URL"
+    printf '%s  %s\n' "$X86_DEB_SHA256" "$deb" | sha256sum -c - >/dev/null
+    dpkg-deb --fsys-tarfile "$deb" | tar -x -C "$work" "$X86_DEB_MEMBER"
+    extracted="$work/${X86_DEB_MEMBER#./}"
+    # IT HAS TO BE x86-64, and the header is the only thing that says so.
+    # e_machine is at offset 18 and is 0x3E for x86-64; a package that
+    # quietly became a wrapper script, or the wrong architecture's build,
+    # would otherwise be staged as machine code and make the filter lose.
+    machine="$(od -An -tx1 -j18 -N2 "$extracted" | tr -d ' \n')"
+    head -c 4 "$extracted" | grep -q "ELF" || {
+        echo "vm-setup: $X86_DEB_MEMBER from $X86_FIXTURE_PIN is not an ELF file" >&2
+        exit 1
+    }
+    [ "$machine" = "3e00" ] || {
+        echo "vm-setup: $X86_DEB_MEMBER is e_machine=$machine, not x86-64 (3e00)." >&2
+        exit 1
+    }
+    install -d "$(dirname "$X86_FIXTURE")"
+    install -m 0644 "$extracted" "$X86_FIXTURE"
+    rm -rf "$work"
+    # LAST, so an interrupted fetch is not mistaken for a finished one.
+    printf '%s\n' "$X86_FIXTURE_PIN" > "$x86_stamp"
+fi
+echo "vm-setup: x86-64 machine code at $X86_FIXTURE ($(stat -c %s "$X86_FIXTURE") bytes)"
 
 echo "vm-setup: the oracle tools, the SquashFS driver and the pinned toolchain are in the guest"
