@@ -1,9 +1,30 @@
 /*
  * fs_squashfs.h — C ABI for the pure-Rust read-only SquashFS driver.
  *
- * Link against libfs_squashfs.a and #include this header. UTF-8 paths,
- * NULL / -1 failure sentinels with thread-local error detail via
+ * Link against libfs_squashfs.a and #include this header. NULL / -1
+ * failure sentinels with thread-local error detail via
  * fs_squashfs_last_error() / fs_squashfs_last_errno().
+ *
+ * PATHS ARE BYTES, NOT TEXT. Every `const char *path` is read as the
+ * bytes up to the NUL and compared byte for byte against the names in
+ * the image. It is never decoded, so no encoding is assumed and none
+ * is required: UTF-8 works because UTF-8 is a byte string, and so does
+ * anything else. SquashFS directory entry names are raw bytes and the
+ * format has no field that could say what encoding they are in — an
+ * image built on a box with a non-UTF-8 locale, or copied off a legacy
+ * volume, holds names that are not valid UTF-8, and they are ordinary
+ * rather than hostile.
+ *
+ * So a name fs_squashfs_dir_next() hands you can always be handed
+ * straight back to fs_squashfs_stat(), fs_squashfs_read_file() and the
+ * rest. It could not before, and those entries were visible, listed and
+ * unopenable.
+ *
+ * A consumer whose own namespace requires valid UTF-8 — macOS, where
+ * APFS and FSKit do — should escape such a name REVERSIBLY (percent-
+ * encoding, or surrogate escapes) so it can be turned back into these
+ * bytes. A lossy conversion maps distinct names onto one and makes two
+ * files indistinguishable.
  *
  * SquashFS is read-only: there is no mkfs / create / write surface.
  *

@@ -4,6 +4,45 @@ Notable changes to `am-fs-squashfs`, newest first. This is a `0.x` crate, so the
 **minor** is the compatibility boundary: a minor bump may break API, a patch
 never does.
 
+## [0.3.0] — 2026-09-28
+
+### Breaking
+
+- **Paths cross the C ABI as bytes, not UTF-8.** `fs_squashfs_stat`,
+  `_dir_open`, `_read_file`, `_readlink`, `_listxattr` and `_getxattr` read
+  their `const char *` as the bytes up to the NUL and compare them byte for
+  byte against the names in the image. They no longer decode, so no encoding
+  is assumed and none is required (#67).
+
+  **Source-compatible for every caller passing UTF-8**, because UTF-8 is a
+  byte string too. What changes is that a caller passing anything else now
+  works instead of being refused, and the errno for a path naming no file is
+  `ENOENT` rather than the `EINVAL` an undecodable one used to get.
+
+  SquashFS directory entry names are raw bytes and the format has no field
+  that could say what encoding they are in, so this crate carries them as
+  `Vec<u8>` everywhere — and the ABI was the one place that did not. The
+  asymmetry was the defect: `fs_squashfs_dir_next` fills `fs_squashfs_dirent_t.name`
+  from the raw bytes, so the library REPORTED a name it then REFUSED to
+  accept. A caller that walked a directory and stat'd each entry got `EINVAL`
+  on exactly the entries this library had handed it a moment earlier, with no
+  byte-oriented entry point to work around it. The images that reaches are
+  ordinary rather than hostile: any box with a non-UTF-8 locale produces such
+  names, as does anything copied off a legacy Windows or Mac volume.
+
+  `Filesystem::lookup_path_bytes` is the resolution, and `lookup_path(&str)`
+  is now a wrapper over it, so the Rust API is unchanged.
+
+  `fs_squashfs_mount` is deliberately not in the list: its argument is a path
+  on the HOST filesystem, handed to `FileDevice::open`, which is a different
+  question from an in-image name.
+
+  **A consumer whose own namespace requires valid UTF-8** — macOS, where APFS
+  and FSKit do — should escape such a name *reversibly* (percent-encoding, or
+  surrogate escapes), so it can be turned back into these bytes. A lossy
+  conversion maps distinct names onto one: `caf\xe9` and `caf\xea` both become
+  `caf<U+FFFD>`, and two files become indistinguishable.
+
 ## [0.2.0] — 2026-09-27
 
 ### Breaking
