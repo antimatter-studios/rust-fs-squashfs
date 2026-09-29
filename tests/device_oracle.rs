@@ -21,6 +21,7 @@
 //! Needs `mksquashfs` and `unsquashfs`, and skips without them -- except
 //! in CI, where `common::tool_available` fails instead.
 
+mod cli_support;
 mod common;
 use common::{dir, file, ImageArtifact};
 
@@ -94,10 +95,12 @@ fn parse_device_lines(listing: &str) -> BTreeMap<String, (char, u32, u32)> {
 // the harness guest now, so the answer is always yes or the run fails
 // saying why — there is nothing left for it to report.
 
-/// `lssquashfs ls /` prints the major and minor where `ls -l` does, and
-/// they are the ones `unsquashfs -lln` reads out of the same image.
+/// `fs.squashfs ls /` gives each device entry the major and minor `ls -l`
+/// shows, and they are the ones `unsquashfs -lln` reads out of the same
+/// image. (This held `lssquashfs`'s `major, minor` column to the same
+/// reference before `fs.squashfs` replaced it.)
 #[test]
-fn lssquashfs_reports_the_device_numbers_unsquashfs_reads() {
+fn fs_squashfs_reports_the_device_numbers_unsquashfs_reads() {
     let image = build(&["-no-xattrs"]);
     let expected = reference(&image);
     // Control: the reference saw every device the image was built with,
@@ -110,19 +113,32 @@ fn lssquashfs_reports_the_device_numbers_unsquashfs_reads() {
         );
     }
 
-    let out = assert_cmd::Command::cargo_bin("lssquashfs")
-        .unwrap()
-        .arg(&image.path)
-        .args(["ls", "/"])
-        .output()
-        .expect("spawn lssquashfs");
-    assert!(out.status.success(), "lssquashfs ls / failed");
-    let ours = parse_device_lines(&String::from_utf8_lossy(&out.stdout));
+    let out = cli_support::ok(
+        cli_support::tool("fs.squashfs")
+            .arg(&image.path)
+            .args(["ls", "/"]),
+    );
+    let listing = cli_support::stdout(&out);
+    let mut ours = BTreeMap::new();
+    for entry in listing.split("\n  {").skip(1) {
+        let kind = match cli_support::json_field(entry, "type").as_str() {
+            "block" => 'b',
+            "char" => 'c',
+            _ => continue,
+        };
+        let number = |key: &str| -> u32 {
+            cli_support::json_field(entry, key)
+                .parse()
+                .unwrap_or_else(|e| panic!("{key} in {entry}: {e}"))
+        };
+        ours.insert(
+            cli_support::json_field(entry, "name"),
+            (kind, number("major"), number("minor")),
+        );
+    }
     assert_eq!(
-        ours,
-        expected,
-        "lssquashfs and unsquashfs disagree on the device nodes:\n{}",
-        String::from_utf8_lossy(&out.stdout)
+        ours, expected,
+        "fs.squashfs and unsquashfs disagree on the device nodes:\n{listing}"
     );
 }
 

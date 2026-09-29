@@ -41,9 +41,14 @@ chore_min_version: 0.6.0
 #     images    138 l /   7,576 B    260 l / 18,000 B  the first --release tier
 #               112 tests                              in a job, so it pays the
 #                                                      cold build too
-#     oracle    672 l /  63,713 B    820 l / 80,000 B  --show-output keeps every
-#                92 tests                              tool call as evidence;
-#                                                      ~22% on the largest tier
+#     oracle    792 l /  81,561 B    950 l / 98,000 B  --show-output keeps every
+#               102 tests                              tool call as evidence;
+#                                                      ~20% on the largest tier.
+#                                                      Was 672 l / 63,713 B at 92
+#                                                      tests; tests/cli_fs_oracle.rs
+#                                                      added 91 l / 14,682 B of
+#                                                      them, measured on CI run
+#                                                      36614252496
 #     kernel     33 l /   4,082 B    140 l /  9,000 B  five kernel mounts and a
 #                 2 tests                              refusal; sized for cold
 #     suite     436 l /  22,594 B    600 l / 30,000 B  measured WARM (1
@@ -54,6 +59,11 @@ chore_min_version: 0.6.0
 #                                                      vagrant's boot retries,
 #                                                      which this repository
 #                                                      does not control
+#     cli        11 l /     431 B     20 l /    700 B  the installed tools, no
+#                76 checks                             cargo output at all; every
+#                                                      file is three lines when it
+#                                                      passes, so a new one is a
+#                                                      visible step
 #     scripts     6 l /     142 B     30 l /  2,000 B  two shell guards today,
 #                                                      and the glob takes the
 #                                                      next one
@@ -253,7 +263,9 @@ tasks:
     cmds:
       - scripts/agents-core-check.sh
       - cargo fmt --check
-      - cargo clippy --locked --all-targets -- -D warnings
+      # `--features cli`: the command-line tools' target requires it, and
+      # clippy silently leaves out a target whose features are off.
+      - cargo clippy --locked --all-targets --features cli -- -D warnings
 
   build:
     desc: Debug build
@@ -308,8 +320,10 @@ tasks:
     # when this invocation ends.
     cmds:
       - scripts/tools.sh --check
-      - 'scripts/tier.sh test:oracle oracle 820 80000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
-      - 'scripts/test-floor.sh oracle 88'
+      - 'scripts/tier.sh test:oracle oracle 950 98000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      # 98: the 88 before, plus tests/cli_fs_oracle.rs's ten -- the tool
+      # held to unsquashfs on every compressor and layout. A floor only goes up.
+      - 'scripts/test-floor.sh oracle 98'
 
   test:kernel:
     desc: 'The driver reads, THE KERNEL reads back: our images loop-mounted by Linux in the guest'
@@ -321,7 +335,9 @@ tasks:
     cmds:
       - scripts/tools.sh --check
       - 'scripts/tier.sh test:kernel kernel 140 9000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
-      - 'scripts/test-floor.sh kernel 2'
+      # 7: the 2 before, plus tests/cli_fs_kernel.rs's five -- the tool
+      # held to the kernel on every compressor it supports.
+      - 'scripts/test-floor.sh kernel 7'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -388,7 +404,42 @@ tasks:
       # Raised from 295 with that measurement.
       - 'scripts/test-floor.sh suite 320'
       - task: test:scripts
-      - scripts/test-verdict.sh unit images oracle kernel suite
+      # The command-line tools, built and staged from this checkout, then
+      # tested as installed. A separate invocation because test:cli reads
+      # PATH, and the staged directory has to come first on it.
+      - task: cli:install
+      - 'PATH="$(scripts/cli-install.sh --print-bin-dir):$PATH" "{{.CHORE_EXE}}" test:cli'
+      - scripts/test-verdict.sh unit images oracle kernel suite cli
+
+  cli:install:
+    desc: 'Build the command-line tools (release, --features cli) and stage them as an install prefix: tmp/cli/bin under every name, tmp/cli/share the man pages and completions'
+    # The layout an install has: the multi-call binary as rust-fs-squashfs
+    # and each dotted name a relative symlink to it. It prints the PATH
+    # line; `test:cli` tests whatever PATH finds, so that directory goes
+    # first.
+    cmds: ['scripts/cli-install.sh']
+
+  test:cli:
+    desc: 'The command-line tools AS INSTALLED, found on PATH: doctor first, then every tests/cli/test-*.sh'
+    # Tests the installed artifact, not a cargo target: the same suite
+    # checks `chore cli:install`'s staging (test:native puts it first on
+    # PATH) and a Homebrew install. `rust-fs-squashfs doctor` runs before
+    # any tool is tested and fails the tier if a name is missing or
+    # shadowed, naming the fix. See scripts/test-cli.sh.
+    #
+    # No VM: the images this tier reads are the committed fixture and
+    # copies of it it damages. What squashfs-tools and the kernel make of
+    # mksquashfs-built images, every compressor, is the oracle and kernel
+    # tiers' question (tests/cli_fs_oracle.rs, tests/cli_fs_kernel.rs).
+    #
+    # BUDGET, measured: see the table at the top of this file.
+    # FLOOR: each file prints a `test result: ok. N passed` line, which
+    # test-floor.sh sums as it does cargo's. 76 checks executed when the
+    # tier was added (fs.squashfs and the names); the floor is about 95% of
+    # that, and it only goes up.
+    cmds:
+      - 'scripts/tier.sh test:cli cli 20 700 -- scripts/test-cli.sh'
+      - 'scripts/test-floor.sh cli 72'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
