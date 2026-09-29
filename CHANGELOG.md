@@ -4,6 +4,15 @@ Notable changes to `am-fs-squashfs`, newest first. This is a `0.x` crate, so the
 **minor** is the compatibility boundary: a minor bump may break API, a patch
 never does.
 
+## [Unreleased]
+
+### Added
+
+- Releases carry a build-provenance attestation: the published `.crate` is
+  attached to the GitHub release for its tag, checked first against the
+  crates.io checksum, and verifiable with `gh attestation verify` (see the
+  README, "Verifying a release").
+
 ## [0.3.0] — 2026-09-28
 
 ### Breaking
