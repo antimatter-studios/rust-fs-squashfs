@@ -21,6 +21,15 @@ never does.
   installed, doctor first, and a `cli` CI job runs it on every pull request.
   The oracle and kernel tiers hold it to `unsquashfs -lls`/`-cat`/`-s` and to
   the kernel, on `mksquashfs` images of every compressor.
+- **Release tarballs of the tool**,
+  `am-fs-squashfs-<version>-<platform>.tar.gz` for `darwin-arm64` and
+  `linux-x86_64`, attached to the GitHub release for the tag with a
+  build-provenance attestation. Each is an install prefix:
+  `bin/rust-fs-squashfs` with `fs.squashfs` a relative symlink to it, section
+  1 man pages, zsh, bash and fish completions,
+  `share/rust-fs-squashfs/CAVEATS` and `LICENSE`. The binary writes its own
+  man pages and completions (`rust-fs-squashfs generate`), and the `cli` CI
+  job packages and checks the tarball on every pull request.
 
 ### Removed
 

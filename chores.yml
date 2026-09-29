@@ -59,11 +59,12 @@ chore_min_version: 0.6.0
 #                                                      vagrant's boot retries,
 #                                                      which this repository
 #                                                      does not control
-#     cli        11 l /     431 B     20 l /    700 B  the installed tools, no
-#                76 checks                             cargo output at all; every
+#     cli        14 l /     510 B     24 l /    900 B  the installed tools, no
+#                94 checks                             cargo output at all; every
 #                                                      file is three lines when it
 #                                                      passes, so a new one is a
-#                                                      visible step
+#                                                      visible step. Was 11 l /
+#                                                      431 B before the docs
 #     scripts     6 l /     142 B     30 l /  2,000 B  two shell guards today,
 #                                                      and the glob takes the
 #                                                      next one
@@ -435,11 +436,11 @@ tasks:
     # BUDGET, measured: see the table at the top of this file.
     # FLOOR: each file prints a `test result: ok. N passed` line, which
     # test-floor.sh sums as it does cargo's. 76 checks executed when the
-    # tier was added (fs.squashfs and the names); the floor is about 95% of
-    # that, and it only goes up.
+    # tier was added (fs.squashfs and the names), 94 with the man pages and
+    # completions; the floor is about 95% of that, and it only goes up.
     cmds:
-      - 'scripts/tier.sh test:cli cli 20 700 -- scripts/test-cli.sh'
-      - 'scripts/test-floor.sh cli 72'
+      - 'scripts/tier.sh test:cli cli 24 900 -- scripts/test-cli.sh'
+      - 'scripts/test-floor.sh cli 89'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
