@@ -51,13 +51,22 @@ they sit on disk (`Filesystem::open_with_cache` sizes it; zero disables it), and
 (`Filesystem::set_meta_cache_capacity`). What each saves is measured in
 [`docs/read-path-cost.md`](docs/read-path-cost.md).
 
-## CLI
+## Command-line tools
+
+One binary, `rust-fs-squashfs`, behind the `cli` feature (so the library a consumer links gains nothing from it), dispatching on the name it is started under. `fs.squashfs` is a symlink to it, and `rust-fs-squashfs fs ...` reaches the same tool under the one name nothing else on `PATH` can shadow.
 
 ```sh
-cargo run --release --bin lssquashfs -- <image> info
-cargo run --release --bin lssquashfs -- <image> tree /
-cargo run --release --bin lssquashfs -- <image> cat /path/to/file
+fs.squashfs rootfs.sqfs ls /etc                        # JSON entries; a symlink's carries its target
+fs.squashfs rootfs.sqfs read /etc/hostname > hostname  # raw bytes, or -o FILE
+fs.squashfs rootfs.sqfs get                            # fs, label (null), sizes, and squashfs.*
+fs.squashfs rootfs.sqfs get squashfs.compression --text
+fs.squashfs --offset 1048576 firmware.bin ls /         # a filesystem embedded in a larger file
+rust-fs-squashfs doctor --text                         # is the fs.squashfs on PATH this one?
 ```
+
+A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that. `write`, `mkdir`, `set` and `resize` exist and answer "SquashFS is read-only" with status 3, so a script moved here from a writable filesystem fails loudly. `--version` prints `<tool> (am-fs-squashfs) <version>`.
+
+`chore cli:install` builds the tools and stages them under every name in `tmp/cli/bin` (it prints the `PATH` line to use); `chore test:cli` tests them as installed.
 
 ## Library use
 

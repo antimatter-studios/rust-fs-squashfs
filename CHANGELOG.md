@@ -8,6 +8,27 @@ never does.
 
 ### Added
 
+- **`fs.squashfs`**, one multi-call binary, `rust-fs-squashfs`, behind a new
+  `cli` feature, so the static library gains no dependency from it:
+  `fs.squashfs <image> ls|read|get|info`, JSON on stdout (`--text` for
+  people), raw bytes for `read`, `{"error": ..., "code": N}` on stderr, and
+  `--offset` for an image embedded in a larger file. `write`, `mkdir`, `set`
+  and `resize` answer "SquashFS is read-only" with status 3. `get label` is
+  null: the format has no label.
+- `rust-fs-squashfs doctor` says whether the `fs.squashfs` on `PATH` is this
+  program, and what wins and the fix when it is not.
+- A `cli` tier (`chore cli:install`, `chore test:cli`) tests the tool as
+  installed, doctor first, and a `cli` CI job runs it on every pull request.
+  The oracle and kernel tiers hold it to `unsquashfs -lls`/`-cat`/`-s` and to
+  the kernel, on `mksquashfs` images of every compressor.
+
+### Removed
+
+- **`lssquashfs`.** `fs.squashfs` replaces it: `info` is `get`, `ls` is
+  `ls`, `cat` is `read`, and `readlink` is the `target` of a symlink's `ls`
+  entry. `tree` has no replacement: recursion is what a mount is for. It was
+  only ever reachable through `cargo install`, so no alias is kept.
+
 - Releases carry a build-provenance attestation: the published `.crate` is
   attached to the GitHub release for its tag, checked first against the
   crates.io checksum, and verifiable with `gh attestation verify` (see the
