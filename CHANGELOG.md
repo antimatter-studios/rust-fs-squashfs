@@ -6,44 +6,7 @@ never does.
 
 ## [Unreleased]
 
-### Added
-
-- **`fs.squashfs`**, one multi-call binary, `rust-fs-squashfs`, behind a new
-  `cli` feature, so the static library gains no dependency from it:
-  `fs.squashfs <image> ls|read|get|info`, JSON on stdout (`--text` for
-  people), raw bytes for `read`, `{"error": ..., "code": N}` on stderr, and
-  `--offset` for an image embedded in a larger file. `write`, `mkdir`, `set`
-  and `resize` answer "SquashFS is read-only" with status 3. `get label` is
-  null: the format has no label.
-- `rust-fs-squashfs doctor` says whether the `fs.squashfs` on `PATH` is this
-  program, and what wins and the fix when it is not.
-- A `cli` tier (`chore cli:install`, `chore test:cli`) tests the tool as
-  installed, doctor first, and a `cli` CI job runs it on every pull request.
-  The oracle and kernel tiers hold it to `unsquashfs -lls`/`-cat`/`-s` and to
-  the kernel, on `mksquashfs` images of every compressor.
-- **Release tarballs of the tool**,
-  `am-fs-squashfs-<version>-<platform>.tar.gz` for `darwin-arm64` and
-  `linux-x86_64`, attached to the GitHub release for the tag with a
-  build-provenance attestation. Each is an install prefix:
-  `bin/rust-fs-squashfs` with `fs.squashfs` a relative symlink to it, section
-  1 man pages, zsh, bash and fish completions,
-  `share/rust-fs-squashfs/CAVEATS` and `LICENSE`. The binary writes its own
-  man pages and completions (`rust-fs-squashfs generate`), and the `cli` CI
-  job packages and checks the tarball on every pull request.
-
-### Removed
-
-- **`lssquashfs`.** `fs.squashfs` replaces it: `info` is `get`, `ls` is
-  `ls`, `cat` is `read`, and `readlink` is the `target` of a symlink's `ls`
-  entry. `tree` has no replacement: recursion is what a mount is for. It was
-  only ever reachable through `cargo install`, so no alias is kept.
-
-- Releases carry a build-provenance attestation: the published `.crate` is
-  attached to the GitHub release for its tag, checked first against the
-  crates.io checksum, and verifiable with `gh attestation verify` (see the
-  README, "Verifying a release").
-
-## [0.3.0] — 2026-09-28
+## [0.3.0] — 2026-09-30
 
 ### Breaking
 
@@ -81,6 +44,42 @@ never does.
   surrogate escapes), so it can be turned back into these bytes. A lossy
   conversion maps distinct names onto one: `caf\xe9` and `caf\xea` both become
   `caf<U+FFFD>`, and two files become indistinguishable.
+
+### Added
+
+- **`fs.squashfs`**, one multi-call binary, `rust-fs-squashfs`, behind a new
+  `cli` feature, so the static library gains no dependency from it:
+  `fs.squashfs <image> ls|read|get|info`, JSON on stdout (`--text` for
+  people), raw bytes for `read`, `{"error": ..., "code": N}` on stderr, and
+  `--offset` for an image embedded in a larger file. `write`, `mkdir`, `set`
+  and `resize` answer "SquashFS is read-only" with status 3. `get label` is
+  null: the format has no label.
+- `rust-fs-squashfs doctor` says whether the `fs.squashfs` on `PATH` is this
+  program, and what wins and the fix when it is not.
+- A `cli` tier (`chore cli:install`, `chore test:cli`) tests the tool as
+  installed, doctor first, and a `cli` CI job runs it on every pull request.
+  The oracle and kernel tiers hold it to `unsquashfs -lls`/`-cat`/`-s` and to
+  the kernel, on `mksquashfs` images of every compressor.
+- **Release tarballs of the tool**,
+  `am-fs-squashfs-<version>-<platform>.tar.gz` for `darwin-arm64` and
+  `linux-x86_64`, attached to the GitHub release for the tag with a
+  build-provenance attestation. Each is an install prefix:
+  `bin/rust-fs-squashfs` with `fs.squashfs` a relative symlink to it, section
+  1 man pages, zsh, bash and fish completions,
+  `share/rust-fs-squashfs/CAVEATS` and `LICENSE`. The binary writes its own
+  man pages and completions (`rust-fs-squashfs generate`), and the `cli` CI
+  job packages and checks the tarball on every pull request.
+- Releases carry a build-provenance attestation: the published `.crate` is
+  attached to the GitHub release for its tag, checked first against the
+  crates.io checksum, and verifiable with `gh attestation verify` (see the
+  README, "Verifying a release").
+
+### Removed
+
+- **`lssquashfs`.** `fs.squashfs` replaces it: `info` is `get`, `ls` is
+  `ls`, `cat` is `read`, and `readlink` is the `target` of a symlink's `ls`
+  entry. `tree` has no replacement: recursion is what a mount is for. It was
+  only ever reachable through `cargo install`, so no alias is kept.
 
 ## [0.2.0] — 2026-09-27
 
