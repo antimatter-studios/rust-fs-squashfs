@@ -33,9 +33,11 @@ path = "src/cli/main.rs"
 required-features = ["cli"]
 
 [features]
-# The command-line tools and nothing else. clap, clap_complete and
-# clap_mangen are MIT/Apache-2.0.
-cli = ["dep:clap", "dep:clap_complete", "dep:clap_mangen"]
+# The command-line tools and nothing else. The plumbing they share --
+# dispatch, --version, doctor, the output contract, man pages and
+# completions -- is am-fs-core's `cli` feature, turned on only here, so
+# the static library gains nothing. clap is MIT/Apache-2.0.
+cli = ["dep:clap", "am-fs-core/cli"]
 
 [dependencies]
 # Block-device trait surface shared with the sister crates (qcow2 reader,
@@ -43,7 +45,7 @@ cli = ["dep:clap", "dep:clap_complete", "dep:clap_mangen"]
 # crates publish; the FFI mount path consumes `fs_core::ffi::FsCoreDevice`
 # so an FSKit extension (or any FFI consumer) can hand us a block-device
 # resource.
-am-fs-core = { path = "../rust-fs-core", version = "0.2.13" }
+am-fs-core = { path = "../rust-fs-core", version = "0.2.14" }
 # LZO1X codec (compression id 3). Extracted from this crate into its own
 # published crate so the Btrfs driver can share it rather than each
 # carrying a copy — the decoder is identical and the format is not
@@ -78,12 +80,6 @@ lru = "0.12"
 # each tool's command a function the man pages and completions can be made
 # from.
 clap = { version = "4.5", optional = true, default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
-# Shell completions and man pages, generated from the same clap commands by
-# the binary itself (`rust-fs-squashfs generate ...`) when a release is
-# packaged, so the documentation cannot describe a flag the program does not
-# take. Both MIT/Apache-2.0, both behind `cli`.
-clap_complete = { version = "4.5", optional = true }
-clap_mangen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 # The suite's one way in to a fixture, to a squashfs-tools oracle and to the

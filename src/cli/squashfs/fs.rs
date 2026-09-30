@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command as Cmd};
 
-use crate::common::{CliError, Json, Outcome, Tool};
+use fs_core::cli::{CliError, Json, Outcome, Tool};
 use fs_core::{BlockRead, FileDevice, OwnedSlice};
 use fs_squashfs::{FileType, Filesystem, Inode};
 
@@ -26,7 +26,7 @@ pub const TOOL: Tool = Tool {
     name: "fs.squashfs",
     verb: "fs",
     section: 1,
-    usage_exit: crate::common::output::EXIT_USAGE,
+    usage_exit: fs_core::cli::output::EXIT_USAGE,
     about: "List, read and inspect a SquashFS image without mounting it",
     command,
     run,
@@ -90,7 +90,7 @@ fn command() -> Cmd {
                 .value_parser(value_parser!(u64))
                 .global(true),
         )
-        .args(crate::common::format_args().map(|a| a.global(true)))
+        .args(fs_core::cli::format_args().map(|a| a.global(true)))
         .subcommand_required(true)
         .subcommand(
             Cmd::new("ls")
