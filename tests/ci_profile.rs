@@ -3026,7 +3026,7 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
         //    nothing and pass: `scripts/test-targets.sh` refuses an
         //    empty selection, but a floor is what catches the selection
         //    that still matches something and no longer matches this.
-        let floor = format!("test-floor.sh {tier} ");
+        let floor = format!("core.sh test-floor {tier} ");
         let floors: Vec<u32> = commands
             .iter()
             .filter_map(|c| c.split_once(&floor))
@@ -3035,7 +3035,7 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
             .collect();
         assert!(
             !floors.is_empty(),
-            "the `{tier}` tier runs in the gate with no `scripts/test-floor.sh {tier} N` \
+            "the `{tier}` tier runs in the gate with no `scripts/core.sh test-floor {tier} N` \
              after it, so a run that executed nothing reports the same as a run that \
              executed everything."
         );

@@ -110,7 +110,7 @@ vars:
   # failing tier stops reading its log aloud. v0.2.11 and v0.2.12 satisfy
   # the first and not the second, which would give up the behaviour these
   # tiers exist for on the one path nobody watches.
-  FS_CORE_REF: v0.2.14
+  FS_CORE_REF: v0.2.16
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.2.0
 
@@ -263,6 +263,9 @@ tasks:
     # ever differ, this is the copy that is wrong.
     cmds:
       - scripts/agents-core-check.sh
+      # The family scripts are rust-fs-core's alone: fails on a committed copy,
+      # a scripts/core.sh that differs from core's, or a call to a local copy.
+      - bash scripts/core.sh family-check
       - cargo fmt --check
       # `--features cli`: the command-line tools' target requires it, and
       # clippy silently leaves out a target whose features are off.
@@ -304,13 +307,13 @@ tasks:
       # 112 executed on 2026-09-28, after the tier grew to cover every
       # crate in the tree: the support crate's 9 tests had never run
       # anywhere (#110). Raised from 95 with that measurement.
-      - 'scripts/test-floor.sh unit 105'
+      - 'bash scripts/core.sh test-floor unit 105'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
     cmds:
       - 'scripts/tier.sh test:images images 260 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
-      - 'scripts/test-floor.sh images 105'
+      - 'bash scripts/core.sh test-floor images 105'
 
   test:oracle:
     desc: 'squashfs-tools and this crate read each other — every tool call made inside the harness VM'
@@ -324,7 +327,7 @@ tasks:
       - 'scripts/tier.sh test:oracle oracle 950 98000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
       # 98: the 88 before, plus tests/cli_fs_oracle.rs's ten -- the tool
       # held to unsquashfs on every compressor and layout. A floor only goes up.
-      - 'scripts/test-floor.sh oracle 98'
+      - 'bash scripts/core.sh test-floor oracle 98'
 
   test:kernel:
     desc: 'The driver reads, THE KERNEL reads back: our images loop-mounted by Linux in the guest'
@@ -338,7 +341,7 @@ tasks:
       - 'scripts/tier.sh test:kernel kernel 140 9000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # 7: the 2 before, plus tests/cli_fs_kernel.rs's five -- the tool
       # held to the kernel on every compressor it supports.
-      - 'scripts/test-floor.sh kernel 7'
+      - 'bash scripts/core.sh test-floor kernel 7'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -371,7 +374,7 @@ tasks:
         # shellcheck disable=SC2086  # the words are the point
         scripts/tier.sh test:vm vm 760 38000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        scripts/test-floor.sh vm 295
+        bash scripts/core.sh test-floor vm 295
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -403,7 +406,7 @@ tasks:
       - 'scripts/tier.sh "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
-      - 'scripts/test-floor.sh suite 320'
+      - 'bash scripts/core.sh test-floor suite 320'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -440,7 +443,7 @@ tasks:
     # completions; the floor is about 95% of that, and it only goes up.
     cmds:
       - 'scripts/tier.sh test:cli cli 24 900 -- scripts/test-cli.sh'
-      - 'scripts/test-floor.sh cli 89'
+      - 'bash scripts/core.sh test-floor cli 89'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
@@ -498,7 +501,7 @@ tasks:
     # room for a warning block without hiding a flood. No floor: it is one
     # check, not a suite.
     cmds:
-      - 'scripts/tier.sh semver semver 40 4000 -- scripts/semver-check.sh'
+      - 'scripts/tier.sh semver semver 40 4000 -- bash scripts/core.sh semver-check'
 
   check:ci-gate:
     desc: The one required check stands for every job in ci.yml
