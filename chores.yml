@@ -110,7 +110,7 @@ vars:
   # failing tier stops reading its log aloud. v0.2.11 and v0.2.12 satisfy
   # the first and not the second, which would give up the behaviour these
   # tiers exist for on the one path nobody watches.
-  FS_CORE_REF: v0.2.16
+  FS_CORE_REF: v0.2.17
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.2.0
 
