@@ -1048,7 +1048,8 @@ fn runs_chore(steps: &[Yaml], task: &str) -> bool {
 /// And the tasks those jobs run must still be what they say:
 /// `chore test` is unit, the tool and fixture checks, the whole suite in
 /// release, and the script tests; `chore lint` is clippy with warnings
-/// denied, and `scripts/ci-gate.sh`, which holds `.github-guard`.
+/// denied, and rust-fs-core's ci-gate (`bash scripts/core.sh ci-gate`),
+/// which holds `.github-guard`.
 /// A pull request gets CI whatever it is based on (#132).
 #[test]
 fn ci_runs_on_a_pull_request_against_any_base() {
@@ -1336,7 +1337,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
          warnings`: without the feature the command-line tools are not linted at all"
     );
     // THE AGGREGATE GATE'S OTHER HALF RUNS HERE OR NOWHERE. This test holds
-    // ci-ok's `needs:` above; `scripts/ci-gate.sh` is the only thing that
+    // ci-ok's `needs:` above; core's ci-gate is the only thing that
     // also holds `.github-guard` to requiring `ci-ok` alone. CI calls no
     // chore task but `lint` that could carry it, and the harness migration
     // (#118) dropped the workflow step that used to run it, so for a while
@@ -1350,9 +1351,9 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
             cmd,
             ChoreCmd::Shell { keys, command }
                 if !carries_any(keys, &NON_GATING_CMD_KEYS)
-                    && command.trim() == "scripts/ci-gate.sh"
+                    && command.trim() == "bash scripts/core.sh ci-gate"
         )),
-        "chores.yml `lint` must run `scripts/ci-gate.sh`: it is the only check that \
+        "chores.yml `lint` must run `bash scripts/core.sh ci-gate`: it is the only check that \
          `.github-guard` requires `ci-ok` and nothing else, and CI runs it through `lint` \
          or not at all"
     );

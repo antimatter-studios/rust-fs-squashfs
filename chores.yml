@@ -110,7 +110,7 @@ vars:
   # failing tier stops reading its log aloud. v0.2.11 and v0.2.12 satisfy
   # the first and not the second, which would give up the behaviour these
   # tiers exist for on the one path nobody watches.
-  FS_CORE_REF: v0.2.17
+  FS_CORE_REF: v0.2.18
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   LINUX_HARNESS_REF: v0.2.0
 
@@ -266,7 +266,7 @@ tasks:
       # The one place CI runs ci-gate: .github-guard must require ci-ok and
       # nothing else, and no test checks that half. #118 dropped the ci.yml
       # step that used to run it, and nothing noticed.
-      - scripts/ci-gate.sh
+      - bash scripts/core.sh ci-gate
       # The family scripts are rust-fs-core's alone: fails on a committed copy,
       # a scripts/core.sh that differs from core's, or a call to a local copy.
       - bash scripts/core.sh family-check
@@ -518,4 +518,4 @@ tasks:
     # floor the gate itself enforces -- so the suite could satisfy its floor
     # partly by checking its own CI config.
     cmds:
-      - scripts/ci-gate.sh
+      - bash scripts/core.sh ci-gate
