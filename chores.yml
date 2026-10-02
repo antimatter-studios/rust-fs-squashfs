@@ -263,6 +263,10 @@ tasks:
     # ever differ, this is the copy that is wrong.
     cmds:
       - scripts/agents-core-check.sh
+      # The one place CI runs ci-gate: .github-guard must require ci-ok and
+      # nothing else, and no test checks that half. #118 dropped the ci.yml
+      # step that used to run it, and nothing noticed.
+      - scripts/ci-gate.sh
       # The family scripts are rust-fs-core's alone: fails on a committed copy,
       # a scripts/core.sh that differs from core's, or a call to a local copy.
       - bash scripts/core.sh family-check
