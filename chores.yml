@@ -110,7 +110,11 @@ vars:
   # failing tier stops reading its log aloud. v0.2.11 and v0.2.12 satisfy
   # the first and not the second, which would give up the behaviour these
   # tiers exist for on the one path nobody watches.
-  FS_CORE_REF: v0.2.18
+  #
+  # v0.2.23 is the first release with scripts/package-cli.sh and the
+  # release-cli workflow release.yml calls (#154): the tarball's packaging
+  # is core's now, and the path sibling must carry it.
+  FS_CORE_REF: v0.2.23
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
