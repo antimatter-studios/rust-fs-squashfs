@@ -126,8 +126,8 @@ fs_squashfs_fs_t *fs_squashfs_mount_with_callbacks(
 
 /*
  * Mount via an FsCoreDevice handle from a sister crate (e.g.
- * fs_core_device_from_callbacks / fs_core_device_slice_ro from am-fs-core,
- * qcow2_open from am-img-qcow2). The handle's refcount is incremented
+ * fs_core_device_from_callbacks / fs_core_device_slice_ro from rust-fs-core,
+ * qcow2_open from rust-img-qcow2). The handle's refcount is incremented
  * internally; the caller still owns its *FsCoreDevice and frees it via
  * fs_core_device_close. Forward declared — full definition in fs_core.h.
  * NULL on failure.

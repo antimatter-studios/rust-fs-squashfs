@@ -34,7 +34,7 @@ env:
   # an argument buried in a `run:` line. It stayed at v0.2.10 for a week
   # after Cargo.toml moved to v0.2.13, and the nightly run went red four
   # nights running on an overflow core had already fixed (#128).
-  FS_CORE_REF: v0.2.23
+  FS_CORE_REF: v0.3.0
 
 # Read-only unless a job asks for more. This repository's default token
 # is read-write, and a workflow that declares nothing inherits it, so every

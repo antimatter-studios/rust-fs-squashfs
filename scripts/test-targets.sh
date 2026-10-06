@@ -106,7 +106,7 @@ fi
 # `fuzz` is deliberately not among them: it is its own package on its own
 # toolchain, built by .github/workflows/fuzz.yml, and Cargo.toml excludes
 # it from the published crate for the same reason.
-CRATES=(-p am-fs-squashfs -p fs-squashfs-test-support)
+CRATES=(-p rust-fs-squashfs -p fs-squashfs-test-support)
 
 case "$tier" in
     unit) printf '%s\n' "${CRATES[@]}" --lib --bins "${args[@]}" -- --skip needs_host:: ;;

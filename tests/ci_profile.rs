@@ -2746,7 +2746,7 @@ fn every_workflow_that_installs_chore_pins_its_version() {
     );
 }
 
-/// Which `am-fs-core` this crate is built against, as stated in one file.
+/// Which `rust-fs-core` this crate is built against, as stated in one file.
 ///
 /// Three spellings, because the pin is a dependency version in a
 /// manifest, an environment variable in a workflow, and once an
@@ -2768,9 +2768,9 @@ fn am_fs_core_versions_declared(text: &str) -> Vec<(String, String)> {
         if line.starts_with('#') {
             continue;
         }
-        if line.contains("am-fs-core") {
+        if line.contains("rust-fs-core") {
             if let Some(v) = quoted_value_after(line, "version") {
-                found.push(("the am-fs-core dependency's `version`".to_string(), v));
+                found.push(("the rust-fs-core dependency's `version`".to_string(), v));
             }
         }
         if let Some(rest) = line.split_once("FS_CORE_REF:") {
@@ -2828,7 +2828,7 @@ const FILES_THAT_PIN_AM_FS_CORE: &[&str] = &[
     ".github/workflows/fuzz.yml",
 ];
 
-/// Every file that names the `am-fs-core` this crate is built against
+/// Every file that names the `rust-fs-core` this crate is built against
 /// names the same one.
 ///
 /// Five files carry that version and nothing compared them.
@@ -2864,7 +2864,7 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
 
     assert!(
         silent.is_empty(),
-        "these files are listed as declaring the am-fs-core pin and no longer do: \
+        "these files are listed as declaring the rust-fs-core pin and no longer do: \
          {silent:?}. Either the pin moved somewhere this guard does not read -- in \
          which case add it to FILES_THAT_PIN_AM_FS_CORE -- or the file stopped \
          pinning the sibling and now builds against whatever is checked out."
@@ -2878,7 +2878,7 @@ fn every_declaration_of_the_am_fs_core_pin_names_the_same_version() {
         .collect();
     assert!(
         disagreeing.is_empty(),
-        "the am-fs-core pin disagrees across the files that declare it. \
+        "the rust-fs-core pin disagrees across the files that declare it. \
          {}: {} says {agreed}, but {disagreeing:?}. A bump has to move every \
          one of them: the last one that did not left the nightly fuzz run \
          building against a release the rest of the crate had left behind, \
@@ -2894,11 +2894,11 @@ mod core_pin_parser {
     /// The real dependency line, in both manifests' shape.
     #[test]
     fn a_path_dependency_declares_its_version() {
-        let toml = "am-fs-core = { path = \"../rust-fs-core\", version = \"0.2.13\" }\n";
+        let toml = "rust-fs-core = { path = \"../rust-fs-core\", version = \"0.2.13\" }\n";
         assert_eq!(
             am_fs_core_versions_declared(toml),
             vec![(
-                "the am-fs-core dependency's `version`".to_string(),
+                "the rust-fs-core dependency's `version`".to_string(),
                 "0.2.13".to_string()
             )],
         );

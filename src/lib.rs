@@ -133,7 +133,7 @@ mod overflow_checks {
 // THE README'S "CRATE LAYOUT" IS WHAT A NEW READER NAVIGATES BY.
 //
 // It listed an `lzo1x` module for several releases after the decoder
-// moved out to the `am-lzo1x` crate (#12), so the clean-room claim was
+// moved out to the `rust-lzo1x` crate (#12), so the clean-room claim was
 // stated about code this crate no longer holds. A list written by hand
 // beside a list the compiler owns drifts silently; this compares the
 // two. See #51.

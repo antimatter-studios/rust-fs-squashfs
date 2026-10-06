@@ -1,8 +1,17 @@
 # Changelog
 
-Notable changes to `am-fs-squashfs`, newest first. This is a `0.x` crate, so the
+Notable changes to `rust-fs-squashfs` (published as `am-fs-squashfs` until its last version), newest first. This is a `0.x` crate, so the
 **minor** is the compatibility boundary: a minor bump may break API, a patch
 never does.
+
+## [0.4.0] — 2026-10-06
+
+### Changed
+
+- **Published as `rust-fs-squashfs`, the repository's name.** The crate was `am-fs-squashfs`
+  until its last version, which stays on crates.io pointing here. A
+  dependent changes one line in `Cargo.toml`; the import (`fs_squashfs`) and the C symbols are unchanged.
+- **Depends on `rust-fs-core` 0.3.0**, the same library under its new name.
 
 ## [Unreleased]
 
@@ -291,6 +300,7 @@ never does.
 - Large-file read coverage across the block/fragment mix, plus stress and
   malformed-image tests.
 
+[0.4.0]: https://github.com/antimatter-studios/rust-fs-squashfs/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/antimatter-studios/rust-fs-squashfs/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/antimatter-studios/rust-fs-squashfs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/antimatter-studios/rust-fs-squashfs/compare/v0.1.5...v0.2.0

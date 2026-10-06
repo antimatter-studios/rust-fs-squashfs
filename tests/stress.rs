@@ -445,7 +445,7 @@ fn with_sb_u64(mut img: Vec<u8>, off: usize, value: u64) -> Vec<u8> {
 ///
 /// THE CACHE IS OFF, and that is not incidental. `Filesystem::open`
 /// wraps the device in `fs_core::CachingDevice`, and at the
-/// `am-fs-core` version this crate pins — v0.2.10 — its `read_at`
+/// `rust-fs-core` version this crate pins — v0.2.10 — its `read_at`
 /// computes `(offset + buf.len() as u64 - 1) / bs` with a plain `+`.
 /// The saturated offset these tests produce is `u64::MAX`, so that line
 /// panics in debug before this crate's own refusal is reached:
@@ -460,7 +460,7 @@ fn with_sb_u64(mut img: Vec<u8>, off: usize, value: u64) -> Vec<u8> {
 /// Testing the uncached path asks about this crate's rule rather than
 /// about a dependency's.
 ///
-/// WHEN am-fs-core MOVES PAST v0.2.10, change this back to
+/// WHEN rust-fs-core MOVES PAST v0.2.10, change this back to
 /// `Filesystem::open` and delete this paragraph. The cached path is the
 /// one every consumer takes, so leaving the workaround here after its
 /// cause is gone would quietly stop testing the default.
