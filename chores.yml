@@ -36,8 +36,11 @@ chore_min_version: 0.6.0
 #   arm64 KVM host, from the run recorded in the pull request that added them:
 #
 #     tier      measured             budget            headroom, and why
-#     unit      132 l /   7,836 B    260 l / 18,000 B  +61 for a cold build,
-#               101 tests                              then room to grow
+#     unit      312 l, under 18,000  360 l / 18,000 B  measured COLD on CI (run
+#               101 tests                              37477344691: a Cargo.lock
+#                                                      change misses the build
+#                                                      cache; warm was 254 l /
+#                                                      13,813 B), then ~15%
 #     images    138 l /   7,576 B    260 l / 18,000 B  the first --release tier
 #               112 tests                              in a job, so it pays the
 #                                                      cold build too
@@ -314,7 +317,7 @@ tasks:
       # debug run is ASKED to prove it traps an overflow, and
       # tests/ci_profile.rs fails the suite if the gating workflow has no
       # such run — following `chore <task>` into this file to find it.
-      - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 260 18000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 360 18000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
       # 112 executed on 2026-09-28, after the tier grew to cover every
       # crate in the tree: the support crate's 9 tests had never run
       # anywhere (#110). Raised from 95 with that measurement.
