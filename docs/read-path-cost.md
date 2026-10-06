@@ -102,7 +102,7 @@ scratch, each time. Resolving 216 paths decompresses the root's
 metadata block 216 times. The bytes now come from memory rather than
 the device, and are then put through gzip again regardless.
 
-`am-fs-erofs` has the shape of the answer already: `pcluster_cache`
+`rust-fs-erofs` has the shape of the answer already: `pcluster_cache`
 holds **decompressed** pclusters, keyed by position, so a hit skips the
 codec as well as the read. SquashFS wants the same thing for its
 metadata blocks, and that is where the next reduction is.

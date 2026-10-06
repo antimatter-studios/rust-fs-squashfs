@@ -153,7 +153,7 @@ it**. Do not silence output to fit, and do not route around `tier.sh`.
 <!-- END SHARED BLOCK: agent-core v2 -->
 ## What this is
 
-Pure-Rust SquashFS driver over `am-fs-core`, exposing a C ABI
+Pure-Rust SquashFS driver over `rust-fs-core`, exposing a C ABI
 (`tests/capi_*.rs`, `tests/c_header_layout.rs`) and linked into the app as a
 staticlib. Read-only format, so the suite is about decoding correctly rather
 than round-tripping writes.
@@ -218,7 +218,7 @@ probe are gone. The one exception left is named and counted in
 
 ## The pin, and the red nightly
 
-This crate pins `am-fs-core` at `v0.2.14`, and the pin is a floor: `chore
+This crate pins `rust-fs-core` at `v0.2.14`, and the pin is a floor: `chore
 siblings` guarantees it and never moves a checkout backwards.
 
 It sat at `v0.2.10` for a while on purpose, because that predates a

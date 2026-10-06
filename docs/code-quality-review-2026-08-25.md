@@ -75,7 +75,7 @@ inside the type dispatch inside the error handling. This will largely resolve wi
 ## A note on the LZO extraction
 
 The crate's LZO1X decompressor used to live here as `src/lzo1x.rs`. It is now the
-separate `am-lzo1x` crate and consumed as a dependency.
+separate `rust-lzo1x` crate and consumed as a dependency.
 
 That was the right call and it has paid for itself twice over: it is a general-purpose
 algorithm with no SquashFS in it, and a sibling driver has since needed exactly the

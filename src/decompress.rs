@@ -8,7 +8,7 @@
 //! |----|------|----------------------------------------------------------|
 //! | 1  | gzip | zlib stream (2-byte header + DEFLATE + Adler-32)         |
 //! | 2  | lzma | legacy `.lzma` "alone" stream (best-effort)              |
-//! | 3  | lzo  | LZO1X stream, decoded by the `am-lzo1x` crate           |
+//! | 3  | lzo  | LZO1X stream, decoded by the `rust-lzo1x` crate           |
 //! | 4  | xz   | `.xz` container stream                                   |
 //! | 5  | lz4  | LZ4 *block* format (no frame; size from block geometry)  |
 //! | 6  | zstd | standard zstd frame                                      |

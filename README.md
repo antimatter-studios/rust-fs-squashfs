@@ -1,22 +1,8 @@
 # rust-fs-squashfs
 
-> **Renamed to [`rust-fs-squashfs`](https://crates.io/crates/rust-fs-squashfs).**
-> `am-fs-squashfs` 0.3.1 is the last version published under this name. New versions
-> are published only as `rust-fs-squashfs`, starting at 0.4.0. To move, change one line
-> in `Cargo.toml`:
->
-> ```toml
-> # before
-> am-fs-squashfs = "0.3"
-> # after
-> rust-fs-squashfs = "0.4"
-> ```
->
-> The import is unchanged: `use fs_squashfs::...` keeps working.
-
 Pure-Rust, **read-only** [SquashFS](https://docs.kernel.org/filesystems/squashfs.html)
 driver. A clean-room SquashFS 4.0 reader over the shared
-[`am-fs-core`](https://github.com/antimatter-studios/rust-fs-core) block-device
+[`rust-fs-core`](https://github.com/antimatter-studios/rust-fs-core) block-device
 trait, exposing a stable C ABI (`fs_squashfs_*`) for FFI from Swift/FSKit, C, or Go.
 
 SquashFS is a compressed, read-only filesystem — a peer format to ext4/ntfs/erofs,
@@ -47,7 +33,7 @@ LZO1X decoder.
 - `superblock` — 96-byte superblock parse + validate
 - `decompress` — codec dispatch (gzip / xz / lz4 / zstd / lzo, plus legacy lzma
   best-effort, all pure-Rust). LZO1X is decoded by the separate
-  [`am-lzo1x`](https://crates.io/crates/am-lzo1x) crate, a clean-room decoder
+  [`rust-lzo1x`](https://crates.io/crates/rust-lzo1x) crate, a clean-room decoder
   with no liblzo2-derived code
 - `metablock` — 8 KiB metadata-block reader + cross-block cursor, and the
   decompressed-metadata cache
@@ -78,7 +64,7 @@ fs.squashfs --offset 1048576 firmware.bin ls /         # a filesystem embedded i
 rust-fs-squashfs doctor --text                         # is the fs.squashfs on PATH this one?
 ```
 
-A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that. `write`, `mkdir`, `set` and `resize` exist and answer "SquashFS is read-only" with status 3, so a script moved here from a writable filesystem fails loudly. `--version` prints `<tool> (am-fs-squashfs) <version>`.
+A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that. `write`, `mkdir`, `set` and `resize` exist and answer "SquashFS is read-only" with status 3, so a script moved here from a writable filesystem fails loudly. `--version` prints `<tool> (rust-fs-squashfs) <version>`.
 
 `chore cli:install` builds the tools and stages them under every name in `tmp/cli/bin` (it prints the `PATH` line to use); `chore test:cli` tests them as installed.
 
@@ -134,8 +120,8 @@ repository, not uploaded from someone's machine. To check the crates.io
 download of version `X.Y.Z`:
 
 ```sh
-curl -sSfLo am-fs-squashfs-X.Y.Z.crate https://static.crates.io/crates/am-fs-squashfs/am-fs-squashfs-X.Y.Z.crate
-gh attestation verify am-fs-squashfs-X.Y.Z.crate \
+curl -sSfLo rust-fs-squashfs-X.Y.Z.crate https://static.crates.io/crates/rust-fs-squashfs/rust-fs-squashfs-X.Y.Z.crate
+gh attestation verify rust-fs-squashfs-X.Y.Z.crate \
   --repo antimatter-studios/rust-fs-squashfs \
   --signer-workflow antimatter-studios/rust-fs-squashfs/.github/workflows/release.yml
 ```
@@ -145,7 +131,7 @@ checksum crates.io records for that version, so the file on the release
 page and the crates.io download are the same bytes.
 
 The command-line tool rides the same release, at the same version:
-`am-fs-squashfs-X.Y.Z-darwin-arm64.tar.gz` and `-linux-x86_64.tar.gz`, each
+`rust-fs-squashfs-X.Y.Z-darwin-arm64.tar.gz` and `-linux-x86_64.tar.gz`, each
 an install prefix (`bin/`, `share/man/`, the shell completions,
 `share/rust-fs-squashfs/CAVEATS`, `LICENSE`). They are packaged and
 attested by rust-fs-core's shared `release-cli.yml` workflow, which this
@@ -153,7 +139,7 @@ repository's `release.yml` calls, so that is the workflow their
 attestations name:
 
 ```sh
-gh attestation verify am-fs-squashfs-X.Y.Z-darwin-arm64.tar.gz \
+gh attestation verify rust-fs-squashfs-X.Y.Z-darwin-arm64.tar.gz \
   --repo antimatter-studios/rust-fs-squashfs \
   --signer-workflow antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml
 ```
