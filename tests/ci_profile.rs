@@ -3040,7 +3040,10 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
         //    here -- so it fails exactly as an absent tier does.
         let runs = format!("tier.sh test:{tier} {tier} ");
         assert!(
-            commands.iter().any(|c| c.contains(&runs)),
+            commands.iter().any(|c| c
+                .replace(" --refuse-ignored", "")
+                .replace(" --refuse-skips", "")
+                .contains(&runs)),
             "nothing whose result gates a pull request runs the `{tier}` tier, which is \
              how this crate is compared against {oracle}. Without it the suite is this \
              driver's own readers agreeing with this driver's own writer, which is \
@@ -3055,7 +3058,7 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
         //    nothing and pass: `scripts/test-targets.sh` refuses an
         //    empty selection, but a floor is what catches the selection
         //    that still matches something and no longer matches this.
-        let floor = format!("core.sh test-floor {tier} ");
+        let floor = format!("test-floor.sh {tier} ");
         let floors: Vec<u32> = commands
             .iter()
             .filter_map(|c| c.split_once(&floor))
