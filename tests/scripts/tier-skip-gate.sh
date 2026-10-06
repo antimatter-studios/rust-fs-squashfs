@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests for scripts/tier.sh's skip gate: a tier whose log reports an
+# Tests for the ignored-test gate this repository asks rust-fs-core's
+# tier.sh for (`--refuse-ignored`, run in place): a tier whose log reports an
 # ignored test must FAIL, and one that reports none must not.
 #
 # A gate that cannot fail is indistinguishable from no gate, and this one
@@ -24,7 +25,7 @@ trap 'rm -f "$LOGS/skipgate.log"' EXIT
 # One tier run whose command prints $1. Budgets generous: this is about
 # the skip gate, not the output budget.
 run_tier() {
-    bash scripts/tier.sh "skip-gate self test" skipgate 100 9000 -- \
+    bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "skip-gate self test" skipgate 100 9000 -- \
         bash -c "printf '%s\n' \"\$@\"" _ "$@" >/dev/null 2>&1
 }
 
@@ -63,7 +64,7 @@ check "the phrase quoted mid-line is not a verdict"   zero \
 # than its ignored count, so the gate must not overwrite a failure -- it
 # only refuses a pass. Run directly: `check` cannot express a command
 # that prints and then fails.
-bash scripts/tier.sh "skip-gate self test" skipgate 100 9000 -- \
+bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "skip-gate self test" skipgate 100 9000 -- \
     bash -c "printf '%s\n' '$IGN'; exit 3" >/dev/null 2>&1
 got=$?
 if [ "$got" -eq 3 ]; then pass=$((pass + 1))

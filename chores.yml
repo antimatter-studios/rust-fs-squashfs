@@ -105,16 +105,16 @@ vars:
   # org, and a URL rebuilt from a repo name points at a repository that
   # does not exist for exactly the ones that are not.
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  # v0.2.13: the release whose scripts/output-budget.sh answers the
-  # `--version` contract scripts/tier.sh checks, AND the one where a
+  # v0.2.13: the release whose ../rust-fs-core/scripts/output-budget.sh answers the
+  # `--version` contract ../rust-fs-core/scripts/tier.sh checks, AND the one where a
   # failing tier stops reading its log aloud. v0.2.11 and v0.2.12 satisfy
   # the first and not the second, which would give up the behaviour these
   # tiers exist for on the one path nobody watches.
   #
-  # v0.2.23 is the first release with scripts/package-cli.sh and the
+  # v0.2.23 is the first release with ../rust-fs-core/scripts/package-cli.sh and the
   # release-cli workflow release.yml calls (#154): the tarball's packaging
   # is core's now, and the path sibling must carry it.
-  FS_CORE_REF: v0.3.0
+  FS_CORE_REF: v0.3.3
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
@@ -269,14 +269,14 @@ tasks:
     # This exists so the CI gate can be reproduced locally. If the two
     # ever differ, this is the copy that is wrong.
     cmds:
-      - scripts/agents-core-check.sh
+      - bash ../rust-fs-core/scripts/agents-core-check.sh
       # The one place CI runs ci-gate: .github-guard must require ci-ok and
       # nothing else, and no test checks that half. #118 dropped the ci.yml
       # step that used to run it, and nothing noticed.
-      - bash scripts/core.sh ci-gate
+      - bash ../rust-fs-core/scripts/ci-gate.sh
       # The family scripts are rust-fs-core's alone: fails on a committed copy,
-      # a scripts/core.sh that differs from core's, or a call to a local copy.
-      - bash scripts/core.sh family-check
+      # or a call to a local copy.
+      - bash ../rust-fs-core/scripts/family-check.sh
       - cargo fmt --check
       # `--features cli`: the command-line tools' target requires it, and
       # clippy silently leaves out a target whose features are off.
@@ -314,17 +314,17 @@ tasks:
       # debug run is ASKED to prove it traps an overflow, and
       # tests/ci_profile.rs fails the suite if the gating workflow has no
       # such run — following `chore <task>` into this file to find it.
-      - 'EXPECT_OVERFLOW_CHECKS=1 scripts/tier.sh test:unit unit 260 18000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      - 'EXPECT_OVERFLOW_CHECKS=1 ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 260 18000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
       # 112 executed on 2026-09-28, after the tier grew to cover every
       # crate in the tree: the support crate's 9 tests had never run
       # anywhere (#110). Raised from 95 with that measurement.
-      - 'bash scripts/core.sh test-floor unit 105'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 105'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
     cmds:
-      - 'scripts/tier.sh test:images images 260 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
-      - 'bash scripts/core.sh test-floor images 105'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:images images 260 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh images 105'
 
   test:oracle:
     desc: 'squashfs-tools and this crate read each other — every tool call made inside the harness VM'
@@ -338,10 +338,10 @@ tasks:
     # reached scripts/test.sh.
     cmds:
       - scripts/tools.sh --check
-      - 'scripts/tier.sh test:oracle oracle 950 98000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 950 98000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
       # 98: the 88 before, plus tests/cli_fs_oracle.rs's ten -- the tool
       # held to unsquashfs on every compressor and layout. A floor only goes up.
-      - 'bash scripts/core.sh test-floor oracle 98'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 98'
 
   test:kernel:
     desc: 'The driver reads, THE KERNEL reads back: our images loop-mounted by Linux in the guest'
@@ -352,10 +352,10 @@ tasks:
     # corruption the kernel has to refuse.
     cmds:
       - scripts/tools.sh --check
-      - 'scripts/tier.sh test:kernel kernel 140 9000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 140 9000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # 7: the 2 before, plus tests/cli_fs_kernel.rs's five -- the tool
       # held to the kernel on every compressor it supports.
-      - 'bash scripts/core.sh test-floor kernel 7'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 7'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -386,9 +386,9 @@ tasks:
           guest_args="$guest_args $arg"
         done
         # shellcheck disable=SC2086  # the words are the point
-        scripts/tier.sh test:vm vm 760 38000 -- \
+        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 760 38000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        bash scripts/core.sh test-floor vm 295
+        bash ../rust-fs-core/scripts/test-floor.sh vm 295
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -417,10 +417,10 @@ tasks:
       - task: test:images
       - task: test:oracle
       - task: test:kernel
-      - 'scripts/tier.sh "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
-      - 'bash scripts/core.sh test-floor suite 320'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 320'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -456,15 +456,15 @@ tasks:
     # tier was added (fs.squashfs and the names), 94 with the man pages and
     # completions; the floor is about 95% of that, and it only goes up.
     cmds:
-      - 'scripts/tier.sh test:cli cli 24 900 -- scripts/test-cli.sh'
-      - 'bash scripts/core.sh test-floor cli 89'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:cli cli 24 900 -- scripts/test-cli.sh'
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 89'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
     cmds:
       - |
         set -eu
-        scripts/tier.sh test:scripts scripts 30 2000 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:scripts scripts 30 2000 -- bash -c '
           set -eu
           for t in tests/scripts/*.sh; do
             echo "== $t"
@@ -515,7 +515,7 @@ tasks:
     # room for a warning block without hiding a flood. No floor: it is one
     # check, not a suite.
     cmds:
-      - 'scripts/tier.sh semver semver 40 4000 -- bash scripts/core.sh semver-check'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored semver semver 40 4000 -- bash ../rust-fs-core/scripts/semver-check.sh'
 
   check:ci-gate:
     desc: The one required check stands for every job in ci.yml
@@ -528,4 +528,4 @@ tasks:
     # floor the gate itself enforces -- so the suite could satisfy its floor
     # partly by checking its own CI config.
     cmds:
-      - bash scripts/core.sh ci-gate
+      - bash ../rust-fs-core/scripts/ci-gate.sh
