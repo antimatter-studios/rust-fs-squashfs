@@ -1,5 +1,19 @@
 # rust-fs-squashfs
 
+> **Renamed to [`rust-fs-squashfs`](https://crates.io/crates/rust-fs-squashfs).**
+> `am-fs-squashfs` 0.3.1 is the last version published under this name. New versions
+> are published only as `rust-fs-squashfs`, starting at 0.4.0. To move, change one line
+> in `Cargo.toml`:
+>
+> ```toml
+> # before
+> am-fs-squashfs = "0.3"
+> # after
+> rust-fs-squashfs = "0.4"
+> ```
+>
+> The import is unchanged: `use fs_squashfs::...` keeps working.
+
 Pure-Rust, **read-only** [SquashFS](https://docs.kernel.org/filesystems/squashfs.html)
 driver. A clean-room SquashFS 4.0 reader over the shared
 [`am-fs-core`](https://github.com/antimatter-studios/rust-fs-core) block-device

@@ -1,9 +1,9 @@
 [package]
 name = "am-fs-squashfs"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "MIT"
-description = "Pure-Rust SquashFS (read-only) filesystem driver. Clean-room implementation; reads SquashFS 4.0 images with every standard compressor (gzip, xz, lz4, zstd, lzo). Exposes a C ABI (fs_squashfs_*) suitable for FFI from C/C++/Swift/Go/etc."
+description = "Renamed to rust-fs-squashfs: this crate receives no further versions. Depend on rust-fs-squashfs instead; the import is unchanged (use fs_squashfs)."
 repository = "https://github.com/antimatter-studios/rust-fs-squashfs"
 
 # The fuzz crate is its own package, on its own toolchain, and is not
