@@ -15,29 +15,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "am-fs-core"
-version = "0.2.23"
-
-[[package]]
-name = "am-fs-squashfs"
-version = "0.3.0"
-dependencies = [
- "am-fs-core",
- "am-lzo1x",
- "flate2",
- "lru",
- "lz4_flex",
- "lzma-rs",
- "ruzstd",
-]
-
-[[package]]
-name = "am-lzo1x"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afeed3f997dd51cba5185a0a6bbb08c4307278e48a917ecb7a71ef8183dacd54"
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -123,9 +100,9 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 name = "fs-squashfs-fuzz"
 version = "0.0.0"
 dependencies = [
- "am-fs-core",
- "am-fs-squashfs",
  "libfuzzer-sys",
+ "rust-fs-core",
+ "rust-fs-squashfs",
 ]
 
 [[package]]
@@ -216,6 +193,29 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rust-fs-core"
+version = "0.3.0"
+
+[[package]]
+name = "rust-fs-squashfs"
+version = "0.4.0"
+dependencies = [
+ "flate2",
+ "lru",
+ "lz4_flex",
+ "lzma-rs",
+ "rust-fs-core",
+ "rust-lzo1x",
+ "ruzstd",
+]
+
+[[package]]
+name = "rust-lzo1x"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fd08cac3694f478b11379ad5e198d839827d6f0d8fa3b5c3a593e95cf6e8522"
 
 [[package]]
 name = "ruzstd"
