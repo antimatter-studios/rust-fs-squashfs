@@ -38,7 +38,7 @@ path = "src/cli/main.rs"
 required-features = ["cli"]
 
 # WHAT THE RELEASE TARBALL SHIPS, read by rust-fs-core's package-cli.sh
-# (`scripts/core.sh package-cli`), which release.yml reaches through core's
+# (`../rust-fs-core/scripts/package-cli.sh`), which release.yml reaches through core's
 # release-cli workflow and ci.yml's `cli` job runs on every pull request.
 # Each dotted name is a relative symlink to bin/rust-fs-squashfs, with its
 # man page in the section given here; the binary's own `generate names`
@@ -60,7 +60,7 @@ cli = ["dep:clap", "rust-fs-core/cli"]
 # crates publish; the FFI mount path consumes `fs_core::ffi::FsCoreDevice`
 # so an FSKit extension (or any FFI consumer) can hand us a block-device
 # resource.
-rust-fs-core = { path = "../rust-fs-core", version = "0.3.0" }
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.3" }
 # LZO1X codec (compression id 3). Extracted from this crate into its own
 # published crate so the Btrfs driver can share it rather than each
 # carrying a copy — the decoder is identical and the format is not

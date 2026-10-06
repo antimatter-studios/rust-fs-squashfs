@@ -229,7 +229,7 @@ fn announced_skips(text: &str) -> Vec<String> {
 /// test that prints "skipping" at least says so in the log; an ignored
 /// one is silent -- libtest counts it, exits 0, and the only trace is a
 /// number in a summary nobody reads. Fixing that number is what
-/// `scripts/tier.sh` does at run time; this names the file.
+/// `../rust-fs-core/scripts/tier.sh` does at run time; this names the file.
 ///
 /// The attribute is never spelled whole in this function, so that this
 /// file does not report itself.
@@ -339,7 +339,7 @@ fn no_test_is_marked_ignore() {
         offenders.is_empty(),
         "these tests are marked so they do not run. A test that cannot run FAILS, \
          naming the task that would provide what it needed -- `fixture` and `oracle` \
-         both do. `scripts/tier.sh` refuses a tier whose log reports any ignored \
+         both do. `../rust-fs-core/scripts/tier.sh` refuses a tier whose log reports any ignored \
          test, so this would fail the run anyway; it fails here to name the \
          file:\n{}",
         offenders.join("\n")

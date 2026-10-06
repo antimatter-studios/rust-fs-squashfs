@@ -1049,7 +1049,7 @@ fn runs_chore(steps: &[Yaml], task: &str) -> bool {
 /// And the tasks those jobs run must still be what they say:
 /// `chore test` is unit, the tool and fixture checks, the whole suite in
 /// release, and the script tests; `chore lint` is clippy with warnings
-/// denied, and rust-fs-core's ci-gate (`bash scripts/core.sh ci-gate`),
+/// denied, and rust-fs-core's ci-gate (`bash ../rust-fs-core/scripts/ci-gate.sh`),
 /// which holds `.github-guard`.
 /// A pull request gets CI whatever it is based on (#132).
 #[test]
@@ -1352,9 +1352,9 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
             cmd,
             ChoreCmd::Shell { keys, command }
                 if !carries_any(keys, &NON_GATING_CMD_KEYS)
-                    && command.trim() == "bash scripts/core.sh ci-gate"
+                    && command.trim() == "bash ../rust-fs-core/scripts/ci-gate.sh"
         )),
-        "chores.yml `lint` must run `bash scripts/core.sh ci-gate`: it is the only check that \
+        "chores.yml `lint` must run `bash ../rust-fs-core/scripts/ci-gate.sh`: it is the only check that \
          `.github-guard` requires `ci-ok` and nothing else, and CI runs it through `lint` \
          or not at all"
     );
@@ -3040,7 +3040,10 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
         //    here -- so it fails exactly as an absent tier does.
         let runs = format!("tier.sh test:{tier} {tier} ");
         assert!(
-            commands.iter().any(|c| c.contains(&runs)),
+            commands.iter().any(|c| c
+                .replace(" --refuse-ignored", "")
+                .replace(" --refuse-skips", "")
+                .contains(&runs)),
             "nothing whose result gates a pull request runs the `{tier}` tier, which is \
              how this crate is compared against {oracle}. Without it the suite is this \
              driver's own readers agreeing with this driver's own writer, which is \
@@ -3055,7 +3058,7 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
         //    nothing and pass: `scripts/test-targets.sh` refuses an
         //    empty selection, but a floor is what catches the selection
         //    that still matches something and no longer matches this.
-        let floor = format!("core.sh test-floor {tier} ");
+        let floor = format!("test-floor.sh {tier} ");
         let floors: Vec<u32> = commands
             .iter()
             .filter_map(|c| c.split_once(&floor))
@@ -3064,7 +3067,7 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
             .collect();
         assert!(
             !floors.is_empty(),
-            "the `{tier}` tier runs in the gate with no `scripts/core.sh test-floor {tier} N` \
+            "the `{tier}` tier runs in the gate with no `../rust-fs-core/scripts/test-floor.sh {tier} N` \
              after it, so a run that executed nothing reports the same as a run that \
              executed everything."
         );
