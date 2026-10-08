@@ -176,6 +176,16 @@ guest** instead (`chore test:vm`). Not a reduced run and not a skip.
 CI is four jobs — `unit`, `test` (x86_64, with the VM), `test (aarch64)` and
 `suite in the guest` — aggregated by `ci-ok`, which is the one required check.
 
+## Keep the features page current
+
+`docs/features.md` lists every feature with its state, the release it shipped
+in, its tracking issue and the test that checks it. **A pull request that
+adds, fixes, refuses or removes behaviour updates its row in the same pull
+request**, with the PR number under **Since** (`Unreleased (#N)` until a
+release, then the version). A finding that leaves something unsupported gets
+a row too, naming its issue. Releases turn every `Unreleased` into the
+version they ship as.
+
 ## Every Linux thing happens in the fs-linux-test-harness VM
 
 The oracle tools are **not installed on a host**, and `chore tools` will not

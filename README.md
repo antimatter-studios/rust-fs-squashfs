@@ -12,21 +12,15 @@ read subset of its sister drivers' surface — no mkfs / create / write.
 
 ## Status
 
-| Area | Support |
-|------|---------|
-| On-disk version | SquashFS 4.0 |
-| Compression | **gzip** (id 1), **xz** (id 4), **lz4** (id 5), **zstd** (id 6), **lzo** (LZO1X, id 3) |
-| Compression (legacy) | `lzma` (id 2) — best-effort |
-| Inodes | basic + extended: dir, file, symlink, dev/fifo/socket |
-| Data | full blocks, sparse blocks, tail fragments |
-| Lookup tables | id (uid/gid), fragment, xattr, export |
-| Resolve an inode number | through the export table: `read_inode_by_number`, `fs_squashfs_stat_ino` |
-| xattrs | read: `list_xattrs` / `get_xattr`, including shared sets and out-of-line values. No write path — SquashFS has none. |
-
-Every standard compressor `mksquashfs` can emit is decoded. gzip/xz/zstd use their
-container stream formats (zlib / `.xz` / zstd frames); lz4 uses the raw LZ4 block
-format with the uncompressed size taken from the block geometry; lzo is a clean-room
-LZO1X decoder.
+Reads SquashFS 4.0 images made with every compressor `mksquashfs` can emit
+(gzip, xz with or without a branch filter, lz4, zstd, lzo, and legacy lzma),
+every inode shape, sparse blocks and tail fragments, the lookup tables, and
+extended attributes; an inode number resolves through the export table. gzip, xz
+and zstd are decoded as their container streams, lz4 as raw blocks sized from the block geometry, and lzo through a clean-room
+LZO1X decoder. **[docs/features.md](docs/features.md) is the full list**:
+every feature, its state (supported, partial, refused, not supported or
+upcoming), the release it shipped in, its tracking issue and the test that
+checks it. Every pull request that changes behaviour updates it.
 
 ## Crate layout
 
