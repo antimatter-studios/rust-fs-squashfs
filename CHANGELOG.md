@@ -6,6 +6,13 @@ never does.
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/features.md`, a features page kept current by every pull request.**
+  Each feature's state, the release it shipped in, its tracking issue and the
+  test that checks it. The README's status table is a short summary pointing
+  to it.
+
 ### Changed
 
 - **The family's scripts run in place from rust-fs-core, and this repository
