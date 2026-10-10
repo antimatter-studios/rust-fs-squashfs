@@ -450,7 +450,7 @@ fn parse_workflow(text: &str) -> Workflow {
                 })
                 .collect();
             jobs.push(Job {
-                keys: keys_of(body),
+                keys: gating_keys_of(body),
                 steps,
             });
         }
@@ -557,6 +557,23 @@ fn not_a_pull_request_gate(workflow: &str) -> Option<String> {
 
 /// Keys whose presence on a step or job means its result does not gate.
 const NON_GATING_KEYS: [&str; 2] = ["if", "continue-on-error"];
+
+/// A job's keys, less an `if:` that is rust-fs-core's documentation-only
+/// path gate: exactly `needs.changes.outputs.code == 'true'`, on a job that
+/// needs `changes` and is not allowed to fail. ci-ok accepts that job's
+/// skip only when the change was documentation alone, so on every change
+/// that could break it the job runs and gates; ci-gate refuses any other
+/// shape. Every other `if:` still marks the job as not gating.
+fn gating_keys_of(job: &Yaml) -> Vec<String> {
+    let keys = keys_of(job);
+    let path_gated = field(job, "if").and_then(Yaml::as_str)
+        == Some("needs.changes.outputs.code == 'true'")
+        && needs_of(job).iter().any(|n| n == "changes")
+        && !keys.iter().any(|k| k == "continue-on-error");
+    keys.into_iter()
+        .filter(|k| !(path_gated && k == "if"))
+        .collect()
+}
 
 fn carries_a_non_gating_key(keys: &[String]) -> bool {
     keys.iter().any(|k| NON_GATING_KEYS.contains(&k.as_str()))
@@ -985,6 +1002,35 @@ fn assert_unconditional(job: &Yaml, name: &str, workflow: &str) {
         !carries_a_non_gating_key(&keys_of(job)),
         "{workflow} jobs.{name} must not be conditional or allowed to fail"
     );
+    assert_steps_unconditional(job, name, workflow);
+}
+
+/// As `assert_unconditional`, but the job may carry the one condition
+/// rust-fs-core's ci-gate accepts: `if: needs.changes.outputs.code ==
+/// 'true'`, needing `changes`. It is skipped, with the jobs after it, for a
+/// change to documentation alone, and ci-ok accepts that skip only then.
+/// Any other condition, and `continue-on-error`, is still refused.
+fn assert_unconditional_or_skipped_for_documentation(job: &Yaml, name: &str, workflow: &str) {
+    let keys = keys_of(job);
+    assert!(
+        !keys.iter().any(|k| k == "continue-on-error"),
+        "{workflow} jobs.{name} must not be allowed to fail"
+    );
+    if let Some(condition) = field(job, "if") {
+        assert_eq!(
+            condition.as_str(),
+            Some("needs.changes.outputs.code == 'true'"),
+            "{workflow} jobs.{name} may be skipped only for a change to documentation alone"
+        );
+        assert!(
+            needs_of(job).iter().any(|n| n == "changes"),
+            "{workflow} jobs.{name} is gated on the changes job, so it must need it"
+        );
+    }
+    assert_steps_unconditional(job, name, workflow);
+}
+
+fn assert_steps_unconditional(job: &Yaml, name: &str, workflow: &str) {
     for (at, step) in steps_of(job, name).iter().enumerate() {
         let keys = keys_of(step);
         // A STEP THAT RUNS NO COMMAND CANNOT GATE, AND MAY BE
@@ -1075,7 +1121,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // jobs.test — x86_64, where GitHub gives us KVM, so the oracles and
     // the kernel tests can run at all.
     let test = job(&document, "test", &path);
-    assert_unconditional(test, "test", "ci.yml");
+    assert_unconditional_or_skipped_for_documentation(test, "test", "ci.yml");
     let runner = field(test, "runs-on").and_then(Yaml::as_str).unwrap_or("");
     assert!(
         runner.starts_with("ubuntu-") && !runner.contains("arm"),
@@ -1093,7 +1139,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // to copy a sibling fails here and has to be justified: a dependency on
     // a job that produces nothing is a dependency that only slows the gate.
     assert!(
-        needs_of(test).is_empty(),
+        needs_of(test).iter().all(|n| n == "changes"),
         "jobs.test needs {:?}, but this repository generates no fixtures: the one \
          committed image is test-disks/squashfs-basic.sqfs and the rest are built \
          in the guest by the tests that read them",
@@ -1149,7 +1195,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // jobs.test-arm64 — the architecture the driver ships on, on a runner
     // with no KVM: the tiers that need no VM.
     let arm = job(&document, "test-arm64", &path);
-    assert_unconditional(arm, "test-arm64", "ci.yml");
+    assert_unconditional_or_skipped_for_documentation(arm, "test-arm64", "ci.yml");
     assert_eq!(
         field(arm, "runs-on").and_then(Yaml::as_str),
         Some("ubuntu-24.04-arm"),
@@ -1174,7 +1220,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // jobs.suite-in-vm — the whole suite built and run INSIDE the guest,
     // which is how a host that is not Linux runs it.
     let in_vm = job(&document, "suite-in-vm", &path);
-    assert_unconditional(in_vm, "suite-in-vm", "ci.yml");
+    assert_unconditional_or_skipped_for_documentation(in_vm, "suite-in-vm", "ci.yml");
     let in_vm_steps = steps_of(in_vm, "suite-in-vm");
     assert!(
         runs_chore(in_vm_steps, "test:vm"),
