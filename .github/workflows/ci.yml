@@ -31,7 +31,14 @@ name: CI
 #                of the tool's reads is judged in the oracle and kernel tiers,
 #                in the `test` job.
 #   ci-ok        the one required check: green only when every job above
-#                succeeded, and red when any was skipped or cancelled.
+#                succeeded, and red when any was skipped or cancelled
+#                except as the plan allows.
+#
+# TWO PROFILES (#172). scripts/ci-plan.sh plans one from the event. A pull
+# request, every layer of a stack, runs QUICK: unit, lint, the shell tests
+# and semver; test, test-arm64, suite-in-vm and cli are skipped. The merge
+# queue, a push to main, a manual dispatch and any event the planner does not
+# know run FULL: every job above. tests/scripts/ci-plan.sh holds the table.
 
 on:
   pull_request:
@@ -41,6 +48,9 @@ on:
   merge_group:
   push:
     branches: [main]
+  # A manual run of the full pipeline on any branch: the full-suite and
+  # oracle evidence a pull request's quick profile does not give.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -67,6 +77,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.c.outputs.code }}
+      # quick for a pull request, full for everything else, including an
+      # event scripts/ci-plan.sh has never heard of.
+      profile: ${{ steps.p.outputs.profile }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -109,9 +122,19 @@ jobs:
           fi
           echo "code=$code ($EVENT${range:+ $range})"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Plan the profile
+        id: p
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          profile="$(bash scripts/ci-plan.sh profile "$EVENT")"
+          echo "profile=$profile ($EVENT)"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
 
   unit:
     name: unit (no tools, no VM)
+    needs: changes
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -153,6 +176,15 @@ jobs:
       # and that test fails naming `chore tools` if one is absent.
       - name: chore test:unit
         run: chore test:unit
+      # The quick profile's lint and shell tests. The full profile runs both
+      # in test-arm64 (and lint in test), so they run here only when those
+      # jobs do not. rustfmt and clippy are installed above.
+      - name: chore lint (quick profile)
+        if: needs.changes.outputs.profile == 'quick'
+        run: chore lint
+      - name: chore test:scripts (quick profile)
+        if: needs.changes.outputs.profile == 'quick'
+        run: chore test:scripts
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
         # verdict; without this the detail dies with the runner and the only
@@ -168,7 +200,7 @@ jobs:
   test:
     name: test (x86_64, oracles in the VM)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -241,7 +273,7 @@ jobs:
   test-arm64:
     name: test (aarch64, no KVM on this runner)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -291,7 +323,7 @@ jobs:
   suite-in-vm:
     name: suite in the guest (the macOS path)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -323,6 +355,8 @@ jobs:
 
   cli:
     name: cli (the installed tools, on PATH)
+    needs: changes
+    if: needs.changes.outputs.profile == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -421,17 +455,23 @@ jobs:
     needs: [changes, unit, test, test-arm64, suite-in-vm, cli, semver]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Every job ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
-          # false only for a change to documentation alone: then, and only
-          # then, a skipped job is not a failed one.
+          # false only for a change to documentation alone.
           CODE: ${{ needs.changes.outputs.code }}
+          # quick only for a pull request. scripts/ci-plan.sh names the jobs
+          # each profile and answer may skip, and refuses a missing or
+          # invalid plan, so a plan that never arrived fails here.
+          PROFILE: ${{ needs.changes.outputs.profile }}
         run: |
           set -euo pipefail
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "code changed: $CODE"
-          bad="$(echo "$NEEDS" | jq -r --arg code "$CODE" '[to_entries[] | select(.value.result != "success" and ($code != "false" or .value.result != "skipped")) | .key] | join(", ")')"
+          echo "code changed: $CODE, profile: $PROFILE"
+          skippable="$(bash scripts/ci-plan.sh skippable "$PROFILE" "$CODE")"
+          echo "may be skipped: ${skippable:-nothing}"
+          bad="$(echo "$NEEDS" | jq -r --arg skip " $skippable " '[to_entries[] | (" " + .key + " ") as $k | select(.value.result != "success" and (.value.result != "skipped" or ($skip | contains($k) | not))) | .key] | join(", ")')"
           if [ -n "$bad" ]; then
             echo "::error::not green: $bad (failed, cancelled or skipped)"
             exit 1
