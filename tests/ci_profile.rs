@@ -12,7 +12,10 @@
 //!
 //! So `ci.yml` -- the workflow that actually gates a merge -- needs its
 //! own debug run, and this file is what keeps it there. It checks
-//! `ci.yml` specifically and is not satisfied by `release.yml` having
+//! quick PR coverage separately from the full merge-group and manual
+//! dispatch gate: full-only debug and oracle paths must gate those
+//! events even though they deliberately do not run on a quick PR.
+//! It checks `ci.yml` specifically and is not satisfied by `release.yml` having
 //! one; see `a_checking_debug_run_that_is_not_in_ci_yml_does_not_satisfy_this_guard`
 //! for that distinction pinned as a test rather than left as a comment
 //! someone could stop believing.
@@ -341,6 +344,7 @@ struct Step {
 
 #[derive(Debug)]
 struct Job {
+    name: String,
     keys: Vec<String>,
     steps: Vec<Step>,
 }
@@ -354,6 +358,8 @@ struct Workflow {
     /// not there. Neither spelling needs an adversarial author.
     triggers: Vec<String>,
     jobs: Vec<Job>,
+    aggregate_needs: Vec<String>,
+    aggregate_gates: bool,
 }
 
 /// The value of `name` in a YAML mapping, or `None`.
@@ -393,6 +399,10 @@ fn keys_of(node: &Yaml) -> Vec<String> {
 /// blindness this module exists to prevent. Failing on the parse error
 /// names the real problem instead of a consequence of it.
 fn parse_workflow(text: &str) -> Workflow {
+    parse_workflow_for_event(text, "pull_request")
+}
+
+fn parse_workflow_for_event(text: &str, event: &str) -> Workflow {
     let documents = Yaml::load_from_str(text).unwrap_or_else(|e| {
         panic!(
             "workflow is not valid YAML: {e}. This guard reads the workflow \
@@ -404,6 +414,8 @@ fn parse_workflow(text: &str) -> Workflow {
         return Workflow {
             triggers: Vec::new(),
             jobs: Vec::new(),
+            aggregate_needs: Vec::new(),
+            aggregate_gates: false,
         };
     };
 
@@ -428,8 +440,15 @@ fn parse_workflow(text: &str) -> Workflow {
     };
 
     let mut jobs = Vec::new();
+    let mut aggregate_needs = Vec::new();
+    let mut aggregate_gates = false;
     if let Some(mapping) = field(document, "jobs").and_then(Yaml::as_mapping) {
-        for (_, body) in mapping.iter() {
+        for (name, body) in mapping.iter() {
+            if name.as_str() == Some("ci-ok") {
+                aggregate_needs = needs_of(body);
+                aggregate_gates = field(body, "if").and_then(Yaml::as_str) == Some("always()")
+                    && field(body, "continue-on-error").is_none();
+            }
             let steps = field(body, "steps")
                 .and_then(Yaml::as_sequence)
                 .into_iter()
@@ -450,13 +469,19 @@ fn parse_workflow(text: &str) -> Workflow {
                 })
                 .collect();
             jobs.push(Job {
-                keys: gating_keys_of(body),
+                name: name.as_str().unwrap_or_default().to_string(),
+                keys: gating_keys_of(body, event),
                 steps,
             });
         }
     }
 
-    Workflow { triggers, jobs }
+    Workflow {
+        triggers,
+        jobs,
+        aggregate_needs,
+        aggregate_gates,
+    }
 }
 
 /// Does this workflow still run on a pull request at all?
@@ -558,16 +583,18 @@ fn not_a_pull_request_gate(workflow: &str) -> Option<String> {
 /// Keys whose presence on a step or job means its result does not gate.
 const NON_GATING_KEYS: [&str; 2] = ["if", "continue-on-error"];
 
-/// A job's keys, less an `if:` that is rust-fs-core's documentation-only
-/// path gate: exactly `needs.changes.outputs.code == 'true'`, on a job that
-/// needs `changes` and is not allowed to fail. ci-ok accepts that job's
-/// skip only when the change was documentation alone, so on every change
-/// that could break it the job runs and gates; ci-gate refuses any other
-/// shape. Every other `if:` still marks the job as not gating.
-fn gating_keys_of(job: &Yaml) -> Vec<String> {
+const CODE_CONDITION: &str = "needs.changes.outputs.code == 'true'";
+const FULL_CODE_CONDITION: &str =
+    "needs.changes.outputs.code == 'true' && needs.changes.outputs.profile == 'full'";
+
+/// Model a code change in the selected event. The full-only condition
+/// gates the merge queue and manual full run, but never a quick PR run.
+/// Unknown conditions and failure suppression remain non-gating.
+fn gating_keys_of(job: &Yaml, event: &str) -> Vec<String> {
     let keys = keys_of(job);
-    let path_gated = field(job, "if").and_then(Yaml::as_str)
-        == Some("needs.changes.outputs.code == 'true'")
+    let condition = field(job, "if").and_then(Yaml::as_str);
+    let path_gated = (condition == Some(CODE_CONDITION)
+        || (event != "pull_request" && condition == Some(FULL_CODE_CONDITION)))
         && needs_of(job).iter().any(|n| n == "changes")
         && !keys.iter().any(|k| k == "continue-on-error");
     keys.into_iter()
@@ -596,12 +623,30 @@ fn carries_a_non_gating_key(keys: &[String]) -> bool {
 /// not run. Sharing the walk is what stops the two drifting apart
 /// again, rather than fixing them separately twice.
 fn scan_steps(workflow: &str, gating: bool, select: &dyn Fn(&str) -> Vec<String>) -> Vec<String> {
-    let wf = parse_workflow(workflow);
-    if gating && !runs_on_pull_request(&wf) {
+    scan_steps_for_event(workflow, "pull_request", gating, select)
+}
+
+fn scan_steps_for_event(
+    workflow: &str,
+    event: &str,
+    gating: bool,
+    select: &dyn Fn(&str) -> Vec<String>,
+) -> Vec<String> {
+    let wf = parse_workflow_for_event(workflow, event);
+    if gating && event != "pull_request" && !profile_planner_is_wired(workflow) {
+        return Vec::new();
+    }
+    if gating && !wf.triggers.iter().any(|trigger| trigger == event) {
         return Vec::new();
     }
     let mut out = Vec::new();
     for job in &wf.jobs {
+        if gating
+            && event != "pull_request"
+            && (!wf.aggregate_gates || !wf.aggregate_needs.contains(&job.name))
+        {
+            continue;
+        }
         if gating && carries_a_non_gating_key(&job.keys) {
             continue;
         }
@@ -888,8 +933,16 @@ fn chore_gating_commands(
 /// proved against small fixtures; the real guard hands it the
 /// repository's own `chores.yml`.
 fn gating_checking_debug_runs_via_chore(workflow: &str, chores: &str) -> Vec<String> {
+    checking_debug_runs_via_chore_for_event(workflow, chores, "pull_request")
+}
+
+fn checking_debug_runs_via_chore_for_event(
+    workflow: &str,
+    chores: &str,
+    event: &str,
+) -> Vec<String> {
     let tasks = parse_chores(chores);
-    scan_steps(workflow, true, &|run| {
+    scan_steps_for_event(workflow, event, true, &|run| {
         let mut found = checking_debug_runs(run);
         for task in chore_invocations(run) {
             found.extend(chore_checking_debug_runs(&tasks, &task, &mut Vec::new()));
@@ -1005,26 +1058,28 @@ fn assert_unconditional(job: &Yaml, name: &str, workflow: &str) {
     assert_steps_unconditional(job, name, workflow);
 }
 
-/// As `assert_unconditional`, but the job may carry the one condition
-/// rust-fs-core's ci-gate accepts: `if: needs.changes.outputs.code ==
-/// 'true'`, needing `changes`. It is skipped, with the jobs after it, for a
-/// change to documentation alone, and ci-ok accepts that skip only then.
-/// Any other condition, and `continue-on-error`, is still refused.
-fn assert_unconditional_or_skipped_for_documentation(job: &Yaml, name: &str, workflow: &str) {
+/// The architecture and guest jobs are mandatory for full code runs,
+/// and absent from quick PR runs. Check both sides of that distinction.
+fn assert_full_profile_job(job: &Yaml, name: &str, workflow: &str) {
     let keys = keys_of(job);
     assert!(
         !keys.iter().any(|k| k == "continue-on-error"),
         "{workflow} jobs.{name} must not be allowed to fail"
     );
-    if let Some(condition) = field(job, "if") {
-        assert_eq!(
-            condition.as_str(),
-            Some("needs.changes.outputs.code == 'true'"),
-            "{workflow} jobs.{name} may be skipped only for a change to documentation alone"
-        );
+    assert_eq!(
+        field(job, "if").and_then(Yaml::as_str),
+        Some(FULL_CODE_CONDITION),
+        "{workflow} jobs.{name} must run for full code changes"
+    );
+    assert!(needs_of(job).iter().any(|n| n == "changes"));
+    assert!(carries_a_non_gating_key(&gating_keys_of(
+        job,
+        "pull_request"
+    )));
+    for event in ["merge_group", "workflow_dispatch"] {
         assert!(
-            needs_of(job).iter().any(|n| n == "changes"),
-            "{workflow} jobs.{name} is gated on the changes job, so it must need it"
+            !carries_a_non_gating_key(&gating_keys_of(job, event)),
+            "{workflow} jobs.{name} must gate {event}"
         );
     }
     assert_steps_unconditional(job, name, workflow);
@@ -1121,7 +1176,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // jobs.test — x86_64, where GitHub gives us KVM, so the oracles and
     // the kernel tests can run at all.
     let test = job(&document, "test", &path);
-    assert_unconditional_or_skipped_for_documentation(test, "test", "ci.yml");
+    assert_full_profile_job(test, "test", "ci.yml");
     let runner = field(test, "runs-on").and_then(Yaml::as_str).unwrap_or("");
     assert!(
         runner.starts_with("ubuntu-") && !runner.contains("arm"),
@@ -1195,7 +1250,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // jobs.test-arm64 — the architecture the driver ships on, on a runner
     // with no KVM: the tiers that need no VM.
     let arm = job(&document, "test-arm64", &path);
-    assert_unconditional_or_skipped_for_documentation(arm, "test-arm64", "ci.yml");
+    assert_full_profile_job(arm, "test-arm64", "ci.yml");
     assert_eq!(
         field(arm, "runs-on").and_then(Yaml::as_str),
         Some("ubuntu-24.04-arm"),
@@ -1220,7 +1275,7 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // jobs.suite-in-vm — the whole suite built and run INSIDE the guest,
     // which is how a host that is not Linux runs it.
     let in_vm = job(&document, "suite-in-vm", &path);
-    assert_unconditional_or_skipped_for_documentation(in_vm, "suite-in-vm", "ci.yml");
+    assert_full_profile_job(in_vm, "suite-in-vm", "ci.yml");
     let in_vm_steps = steps_of(in_vm, "suite-in-vm");
     assert!(
         runs_chore(in_vm_steps, "test:vm"),
@@ -2195,7 +2250,9 @@ tasks:
     /// A cycle is chore's error to report; the guard must just not hang.
     #[test]
     fn a_task_cycle_terminates() {
-        let chores = format!("{CHORES}  a:\n    cmds:\n      - task: b\n      - task: test:unit\n  b:\n    cmds:\n      - task: a\n");
+        let chores = format!(
+            "{CHORES}  a:\n    cmds:\n      - task: b\n      - task: test:unit\n  b:\n    cmds:\n      - task: a\n"
+        );
         let workflow = WORKFLOW.replace("run: chore test:unit", "run: chore a");
         assert_eq!(gating(&workflow, &chores).len(), 1);
     }
@@ -2253,58 +2310,69 @@ tasks:
     /// Note what it takes: dropping the `unit` job's `chore test:unit` is
     /// NOT enough on its own, because the `test` job's `chore test` runs
     /// `task: test:unit` as well -- in debug, with the handshake -- so the
-    /// PR gate still sees an overflow, on both architectures. Only both
+    /// full gate still sees an overflow, on both architectures. Only both
     /// gone, or the handshake gone from the task, or the task made
     /// skippable, leaves nothing.
     #[test]
     fn the_real_files_stop_gating_when_the_run_is_removed() {
         let workflow = real(&[".github", "workflows", "ci.yml"]);
         let chores = real(&["chores.yml"]);
-        assert!(!gating(&workflow, &chores).is_empty(), "control");
+        // Keep the original mutations, and grade them against EACH full
+        // event rather than pretending full-only jobs run on a quick PR.
+        for event in ["merge_group", "workflow_dispatch"] {
+            let gating = |workflow: &str, chores: &str| {
+                super::checking_debug_runs_via_chore_for_event(workflow, chores, event)
+            };
+            assert!(!gating(&workflow, &chores).is_empty(), "control");
 
-        let no_unit_step = workflow.replace("run: chore test:unit\n", "run: 'true'\n");
-        assert_ne!(no_unit_step, workflow, "the mutation must actually apply");
-        let via_chore_test = gating(&no_unit_step, &chores);
-        // NON-EMPTY FIRST. `all` over an empty list is true, so this
-        // read as "only `chore test` reaches the run" while in fact
-        // NOTHING reached it: the resolver could not follow
-        // `"{{.CHORE_EXE}}" test:native`, so `chore test` was a dead end
-        // and the assertion passed by vacuity.
-        assert!(
-            !via_chore_test.is_empty(),
-            "the `test` job's `chore test` must still reach the debug run once the \
+            let no_unit_step = workflow.replace("run: chore test:unit\n", "run: 'true'\n");
+            assert_ne!(no_unit_step, workflow, "the mutation must actually apply");
+            assert!(
+                super::gating_checking_debug_runs_via_chore(&no_unit_step, &chores).is_empty(),
+                "the quick PR has no debug run once its unit steps are removed"
+            );
+            let via_chore_test = gating(&no_unit_step, &chores);
+            // NON-EMPTY FIRST. `all` over an empty list is true, so this
+            // read as "only `chore test` reaches the run" while in fact
+            // NOTHING reached it: the resolver could not follow
+            // `"{{.CHORE_EXE}}" test:native`, so `chore test` was a dead end
+            // and the assertion passed by vacuity.
+            assert!(
+                !via_chore_test.is_empty(),
+                "the `test` job's `chore test` must still reach the debug run once the \
              unit job's step is gone -- it runs `test:native`, which runs `test:unit`"
-        );
-        assert!(
-            via_chore_test
-                .iter()
-                .all(|run| run.starts_with("chore test -> test:native -> test:unit: ")),
-            "without the unit job's step, only `chore test` reaches the run, and only \
+            );
+            assert!(
+                via_chore_test
+                    .iter()
+                    .all(|run| run.starts_with("chore test -> test:native -> test:unit: ")),
+                "without the unit job's step, only `chore test` reaches the run, and only \
              through test:native; got {via_chore_test:?}"
-        );
-        let neither = no_unit_step.replace("run: chore test\n", "run: 'true'\n");
-        assert_ne!(neither, no_unit_step, "the mutation must actually apply");
-        assert!(
-            gating(&neither, &chores).is_empty(),
-            "no step reaches test:unit"
-        );
+            );
+            let neither = no_unit_step.replace("run: chore test\n", "run: 'true'\n");
+            assert_ne!(neither, no_unit_step, "the mutation must actually apply");
+            assert!(
+                gating(&neither, &chores).is_empty(),
+                "no step reaches test:unit"
+            );
 
-        let no_handshake = chores.replace("EXPECT_OVERFLOW_CHECKS=1 ", "");
-        assert_ne!(no_handshake, chores, "the mutation must actually apply");
-        assert!(
-            gating(&workflow, &no_handshake).is_empty(),
-            "test:unit without EXPECT_OVERFLOW_CHECKS=1 asks the build nothing"
-        );
+            let no_handshake = chores.replace("EXPECT_OVERFLOW_CHECKS=1 ", "");
+            assert_ne!(no_handshake, chores, "the mutation must actually apply");
+            assert!(
+                gating(&workflow, &no_handshake).is_empty(),
+                "test:unit without EXPECT_OVERFLOW_CHECKS=1 asks the build nothing"
+            );
 
-        let skippable = chores.replace(
-            "  test:unit:\n",
-            "  test:unit:\n    sources: ['src/**/*.rs']\n",
-        );
-        assert_ne!(skippable, chores, "the mutation must actually apply");
-        assert!(
-            gating(&workflow, &skippable).is_empty(),
-            "a test:unit chore may skip as up to date gates nothing"
-        );
+            let skippable = chores.replace(
+                "  test:unit:\n",
+                "  test:unit:\n    sources: ['src/**/*.rs']\n",
+            );
+            assert_ne!(skippable, chores, "the mutation must actually apply");
+            assert!(
+                gating(&workflow, &skippable).is_empty(),
+                "a test:unit chore may skip as up to date gates nothing"
+            );
+        }
     }
 }
 
@@ -2422,8 +2490,7 @@ jobs:
     /// a genuine debug run.
     #[test]
     fn a_trailing_comment_naming_release_does_not_disqualify_a_debug_run() {
-        let yaml =
-            "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib  # deliberately not --release\n";
+        let yaml = "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib  # deliberately not --release\n";
         assert_eq!(
             checking_debug_runs(yaml),
             vec!["- run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --lib".to_string()],
@@ -2472,8 +2539,7 @@ jobs:
     /// A profile named another way still disqualifies the run.
     #[test]
     fn a_profile_flag_disqualifies_a_run_even_with_the_handshake() {
-        let yaml =
-            "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --profile release-with-debug --lib\n";
+        let yaml = "      - run: EXPECT_OVERFLOW_CHECKS=1 cargo test --locked --profile release-with-debug --lib\n";
         assert_eq!(checking_debug_runs(yaml), Vec::<String>::new());
     }
 }
@@ -3013,8 +3079,12 @@ mod core_pin_parser {
 /// text is a parameter for the same reason, so the rules can be proved
 /// against small fixtures.
 fn gating_commands_via_chore(workflow: &str, chores: &str) -> Vec<String> {
+    gating_commands_for_event(workflow, chores, "pull_request")
+}
+
+fn gating_commands_for_event(workflow: &str, chores: &str, event: &str) -> Vec<String> {
     let tasks = parse_chores(chores);
-    scan_steps(workflow, true, &|run| {
+    let select = |run: &str| {
         let mut found: Vec<String> = run.lines().map(str::to_string).collect();
         for task in chore_invocations(run) {
             found.extend(
@@ -3024,7 +3094,119 @@ fn gating_commands_via_chore(workflow: &str, chores: &str) -> Vec<String> {
             );
         }
         found
+    };
+    if event == "pull_request" {
+        scan_steps(workflow, true, &select)
+    } else {
+        scan_steps_for_event(workflow, event, true, &select)
+    }
+}
+
+/// Follow the real event into the planner and its output into job
+/// conditions. A literal profile or an unwritten output is no plan.
+fn profile_planner_is_wired(workflow: &str) -> bool {
+    let document = load_document(workflow, &workflow_path("ci.yml"));
+    let Some(changes) = field(&document, "jobs").and_then(|jobs| field(jobs, "changes")) else {
+        return false;
+    };
+    if carries_a_non_gating_key(&keys_of(changes))
+        || field(changes, "outputs")
+            .and_then(|outputs| field(outputs, "profile"))
+            .and_then(Yaml::as_str)
+            != Some("${{ steps.p.outputs.profile }}")
+    {
+        return false;
+    }
+    steps_of(changes, "changes").iter().any(|step| {
+        field(step, "id").and_then(Yaml::as_str) == Some("p")
+            && !carries_a_non_gating_key(&keys_of(step))
+            && field(step, "env")
+                .and_then(|env| field(env, "EVENT"))
+                .and_then(Yaml::as_str)
+                == Some("${{ github.event_name }}")
+            && run_of(step).contains("profile=\"$(bash scripts/ci-plan.sh profile \"$EVENT\")\"")
+            && run_of(step).contains("echo \"profile=$profile\" >> \"$GITHUB_OUTPUT\"")
     })
+}
+
+#[test]
+fn profile_events_publish_the_plan_and_full_jobs_remain_required() {
+    let workflow = read_or_panic(&workflow_path("ci.yml"));
+    let chores = read_or_panic(&manifest_dir().join("chores.yml"));
+    assert!(
+        profile_planner_is_wired(&workflow),
+        "real output wiring control"
+    );
+    let plan = |arguments: &[&str]| {
+        std::process::Command::new("bash")
+            .arg(manifest_dir().join("scripts/ci-plan.sh"))
+            .args(arguments)
+            .output()
+            .expect("bash must execute the CI planner")
+    };
+    for (event, expected) in [
+        ("pull_request", "quick"),
+        ("merge_group", "full"),
+        ("workflow_dispatch", "full"),
+        ("push", "full"),
+        ("unknown-event", "full"),
+    ] {
+        let output = plan(&["profile", event]);
+        assert!(output.status.success(), "planner failed for {event}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
+        let skipped = plan(&["skippable", expected, "true"]);
+        assert!(skipped.status.success());
+        assert_eq!(
+            String::from_utf8(skipped.stdout).unwrap().trim(),
+            if expected == "quick" {
+                "test test-arm64 suite-in-vm cli"
+            } else {
+                ""
+            }
+        );
+    }
+    for arguments in [
+        vec!["profile", ""],
+        vec!["skippable", "", "true"],
+        vec!["skippable", "full", "maybe"],
+    ] {
+        assert!(!plan(&arguments).status.success(), "invalid plan must fail");
+    }
+    let quick = gating_commands_via_chore(&workflow, &chores);
+    assert!(
+        !quick.iter().any(|run| run.contains("test:kernel kernel")),
+        "quick PR must not be mistaken for independent kernel evidence"
+    );
+    for event in ["merge_group", "workflow_dispatch"] {
+        assert!(
+            !checking_debug_runs_via_chore_for_event(&workflow, &chores, event).is_empty(),
+            "real full debug control for {event}"
+        );
+        let trigger = format!("  {event}:\n");
+        for (from, to) in [
+            (trigger.as_str(), ""),
+            ("${{ steps.p.outputs.profile }}", "full"),
+            ("${{ github.event_name }}", "pull_request"),
+            ("echo \"profile=$profile\" >> \"$GITHUB_OUTPUT\"", "true"),
+            (
+                "needs: [changes, unit, test, test-arm64, suite-in-vm, cli, semver]",
+                "needs: [changes, unit, test-arm64, suite-in-vm, cli, semver]",
+            ),
+            ("if: always()", "if: false"),
+            ("  test:\n", "  test:\n    continue-on-error: true\n"),
+            ("run: chore test\n", "if: false\n        run: chore test\n"),
+        ] {
+            let mutated = workflow.replace(from, to);
+            assert_ne!(mutated, workflow, "mutation must apply: {from}");
+            let commands = gating_commands_for_event(&mutated, &chores, event);
+            assert!(
+                !commands
+                    .iter()
+                    .any(|run| run.contains("test:kernel kernel")),
+                "broken trigger, planner or aggregate must lose the {event} kernel path: {from}"
+            );
+        }
+    }
 }
 
 /// The tiers that compare this crate against something that is not this
@@ -3077,68 +3259,109 @@ fn the_pr_gate_still_cross_validates_against_an_oracle_that_is_not_this_crate() 
     if let Some(why) = not_a_pull_request_gate(&workflow) {
         panic!("{}: {why}", path.display());
     }
-    let commands = gating_commands_via_chore(&workflow, &chores);
+    for event in ["merge_group", "workflow_dispatch"] {
+        let commands = gating_commands_for_event(&workflow, &chores, event);
 
-    for (tier, oracle) in CROSS_VALIDATING_TIERS {
-        // 1. THE TIER IS REACHED, from a step whose result gates. A
-        //    step or task carrying `if:` or `continue-on-error:`, or a
-        //    task chore may skip as up to date, contributes nothing
-        //    here -- so it fails exactly as an absent tier does.
-        let runs = format!("tier.sh test:{tier} {tier} ");
-        assert!(
-            commands.iter().any(|c| c
-                .replace(" --refuse-ignored", "")
-                .replace(" --refuse-skips", "")
-                .contains(&runs)),
-            "nothing whose result gates a pull request runs the `{tier}` tier, which is \
+        for (tier, oracle) in CROSS_VALIDATING_TIERS {
+            // Real-file negative controls must lose this tier, not merely
+            // compare an updated condition string with itself.
+            let reaches = |workflow: &str, chores: &str| {
+                let runs = format!("tier.sh test:{tier} {tier} ");
+                gating_commands_for_event(workflow, chores, event)
+                    .iter()
+                    .any(|c| {
+                        c.replace(" --refuse-ignored", "")
+                            .replace(" --refuse-skips", "")
+                            .contains(&runs)
+                    })
+            };
+            assert!(
+                reaches(&workflow, &chores),
+                "{event} control reaches {tier}"
+            );
+            let removed = chores.replace(&format!("      - task: test:{tier}\n"), "");
+            assert_ne!(removed, chores, "tier removal must apply");
+            assert!(
+                !reaches(&workflow, &removed),
+                "removed {tier} must not gate {event}"
+            );
+            let skippable = chores.replace(
+                &format!("  test:{tier}:\n"),
+                &format!("  test:{tier}:\n    sources: ['src/**/*.rs']\n"),
+            );
+            assert_ne!(skippable, chores, "task condition must apply");
+            assert!(
+                !reaches(&workflow, &skippable),
+                "skippable {tier} must not gate {event}"
+            );
+            for condition in ["false", "needs.changes.outputs.profile == 'quick'"] {
+                let disabled = workflow.replace(FULL_CODE_CONDITION, condition);
+                assert_ne!(disabled, workflow, "condition mutation applies");
+                assert!(
+                    !reaches(&disabled, &chores),
+                    "{condition} must not gate {event}"
+                );
+            }
+            // 1. THE TIER IS REACHED, from a step whose result gates. A
+            //    step or task carrying `if:` or `continue-on-error:`, or a
+            //    task chore may skip as up to date, contributes nothing
+            //    here -- so it fails exactly as an absent tier does.
+            let runs = format!("tier.sh test:{tier} {tier} ");
+            assert!(
+                commands.iter().any(|c| c
+                    .replace(" --refuse-ignored", "")
+                    .replace(" --refuse-skips", "")
+                    .contains(&runs)),
+                "nothing whose result gates {event} runs the `{tier}` tier, which is \
              how this crate is compared against {oracle}. Without it the suite is this \
              driver's own readers agreeing with this driver's own writer, which is \
              self-consistency and not correctness. The tier is reached from ci.yml's \
              `test` job through `chore test` -> `test:native` -> `task: test:{tier}`; \
              an `if:` or `continue-on-error:` anywhere on that path removes it as \
              surely as deleting the task does."
-        );
+            );
 
-        // 2. AND IT SAYS HOW FEW TESTS COUNT AS HAVING RUN IT. A tier
-        //    whose selection stopped matching would otherwise run
-        //    nothing and pass: `scripts/test-targets.sh` refuses an
-        //    empty selection, but a floor is what catches the selection
-        //    that still matches something and no longer matches this.
-        let floor = format!("test-floor.sh {tier} ");
-        let floors: Vec<u32> = commands
-            .iter()
-            .filter_map(|c| c.split_once(&floor))
-            .filter_map(|(_, rest)| rest.split_whitespace().next())
-            .filter_map(|n| n.parse().ok())
-            .collect();
-        assert!(
-            !floors.is_empty(),
-            "the `{tier}` tier runs in the gate with no `../rust-fs-core/scripts/test-floor.sh {tier} N` \
+            // 2. AND IT SAYS HOW FEW TESTS COUNT AS HAVING RUN IT. A tier
+            //    whose selection stopped matching would otherwise run
+            //    nothing and pass: `scripts/test-targets.sh` refuses an
+            //    empty selection, but a floor is what catches the selection
+            //    that still matches something and no longer matches this.
+            let floor = format!("test-floor.sh {tier} ");
+            let floors: Vec<u32> = commands
+                .iter()
+                .filter_map(|c| c.split_once(&floor))
+                .filter_map(|(_, rest)| rest.split_whitespace().next())
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            assert!(
+                !floors.is_empty(),
+                "the `{tier}` tier runs in the gate with no `../rust-fs-core/scripts/test-floor.sh {tier} N` \
              after it, so a run that executed nothing reports the same as a run that \
              executed everything."
-        );
-        assert!(
-            floors.iter().all(|&n| n >= 1),
-            "the `{tier}` tier's floor is {floors:?}. A floor of zero is not a floor: \
+            );
+            assert!(
+                floors.iter().all(|&n| n >= 1),
+                "the `{tier}` tier's floor is {floors:?}. A floor of zero is not a floor: \
              every run satisfies it, including the one that ran nothing."
-        );
-    }
+            );
+        }
 
-    // 3. AND THE ORACLE IS CHECKED PRESENT RATHER THAN SKIPPED PAST.
-    //    Both tiers begin with it. The tools live in the guest, so this
-    //    is what fails the run when the VM has not been provisioned --
-    //    the alternative being a test that decides there is no tool and
-    //    passes, which is the failure the whole suite is written
-    //    against.
-    assert!(
-        commands
-            .iter()
-            .any(|c| c.contains("scripts/tools.sh --check")),
-        "no gating command runs `scripts/tools.sh --check`, so nothing fails the run \
+        // 3. AND THE ORACLE IS CHECKED PRESENT RATHER THAN SKIPPED PAST.
+        //    Both tiers begin with it. The tools live in the guest, so this
+        //    is what fails the run when the VM has not been provisioned --
+        //    the alternative being a test that decides there is no tool and
+        //    passes, which is the failure the whole suite is written
+        //    against.
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.contains("scripts/tools.sh --check")),
+            "no gating command runs `scripts/tools.sh --check`, so nothing fails the run \
          when the oracle tools are missing: a tier that cannot reach its oracle would \
          have to decide what to do about it, and the only answers are to fail loudly \
          here or to skip quietly there."
-    );
+        );
+    }
 
     // AND THE PROVISIONING STILL PROVIDES BOTH ORACLES. `tools.sh
     //  --check` proves the guest answers; this proves the guest was
