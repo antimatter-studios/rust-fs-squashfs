@@ -180,14 +180,14 @@ jobs:
       # and that test fails naming `chore tools` if one is absent.
       - name: chore test:unit
         run: chore test:unit
-      # The quick profile's lint and shell tests. The full profile runs both
-      # in test-arm64 (and lint in test), so they run here only when those
-      # jobs do not. rustfmt and clippy are installed above.
-      - name: chore lint (quick profile)
-        if: needs.changes.outputs.profile == 'quick'
+      # Lint and the shell tests run here under every profile. The full
+      # profile also runs both in test-arm64 (and lint in test), but a step
+      # that runs a command is never conditional (tests/ci_profile.rs), so
+      # the quick profile's only copy is not gated on the profile either.
+      # rustfmt and clippy are installed above.
+      - name: chore lint
         run: chore lint
-      - name: chore test:scripts (quick profile)
-        if: needs.changes.outputs.profile == 'quick'
+      - name: chore test:scripts
         run: chore test:scripts
       - name: Keep the tier logs
         # A quiet tier writes its detail to tmp/logs/<tier>.log and prints a
