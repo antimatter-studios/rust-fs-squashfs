@@ -56,7 +56,8 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
     }
     // fs.squashfs's subcommands have pages of their own, which its list names.
     for verb in [
-        "ls", "stat", "read", "write", "mkdir", "get", "info", "set", "resize",
+        "ls", "stat", "read", "write", "mkdir", "rm", "rmdir", "mv", "ln", "truncate", "get",
+        "info", "set", "resize",
     ] {
         assert!(
             share
@@ -68,6 +69,12 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
     let ls = std::fs::read_to_string(share.join("man/man1/fs.squashfs-ls.1")).unwrap();
     for option in ["recursive", "max-depth", "limit"] {
         assert!(ls.contains(option), "ls man page omits {option}");
+    }
+    for (verb, option) in [("write", "at"), ("mkdir", "parents"), ("ln", "symbolic")] {
+        let page =
+            std::fs::read_to_string(share.join(format!("man/man1/fs.squashfs-{verb}.1"))).unwrap();
+        assert!(page.contains(option), "{verb} man page omits {option}");
+        assert!(page.contains("Examples:"), "{verb} man page omits examples");
     }
 }
 
@@ -94,7 +101,19 @@ fn every_name_has_a_zsh_bash_and_fish_completion() {
         assert!(fish.contains(&format!("complete -c {name}")), "fish {name}");
         if name == "fs.squashfs" {
             for completion in [&zsh, &bash, &fish] {
-                for option in ["recursive", "max-depth", "limit"] {
+                for option in [
+                    "recursive",
+                    "max-depth",
+                    "limit",
+                    "rm",
+                    "rmdir",
+                    "mv",
+                    "ln",
+                    "truncate",
+                    "at",
+                    "parents",
+                    "symbolic",
+                ] {
                     assert!(completion.contains(option), "completion omits {option}");
                 }
             }
