@@ -1,7 +1,7 @@
 //! `fs.squashfs <target> <verb>`: an errand inside a SquashFS image,
 //! without mounting it.
 //!
-//! The verbs are the shared set every `fs.<fs>` answers: `ls`, `stat`, `read`,
+//! The verbs are the shared set every `fs.<fs>` answers: `ls`, `stat`, `read`, `xattr`,
 //! `get`/`info`, and `write`, `mkdir`, `rm`, `rmdir`, `mv`, `ln`, `truncate`,
 //! `set`, `resize`. SquashFS is a read-only format, so mutations refuse with exit status 3
 //! and "SquashFS is read-only": a script moved here from a writable
@@ -71,8 +71,8 @@ fn command() -> Cmd {
             "Work inside a SquashFS image directly: no mount, no kernel driver.\n\n\
              An escape hatch for an errand (get a file out, see what is in it, check how \
              it was built), not a place to do real filesystem work: for that, mount it.\n\n\
-             Metadata is JSON on stdout (--text for people); `read` writes the file's raw \
-             bytes. A failure is {\"error\": \"...\", \"code\": N} on stderr, N being the \
+             Metadata is JSON on stdout (--text for people); `read` and `xattr PATH NAME` \
+             write raw bytes. A failure is {\"error\": \"...\", \"code\": N} on stderr, N being the \
              exit status: 1 failed, 2 wrong command line, 3 SquashFS cannot do that (it is \
              read-only).",
         )
@@ -182,6 +182,36 @@ fn command() -> Cmd {
                     "Examples:\n  fs.squashfs rootfs.sqfs read /etc/hostname\n  \
                      fs.squashfs rootfs.sqfs read /var/log/syslog | grep -i error\n  \
                      fs.squashfs rootfs.sqfs read /backup.tar -o backup.tar",
+                ),
+        )
+        .subcommand(
+            Cmd::new("xattr")
+                .about("List a path's extended attributes, or write one value's raw bytes")
+                .arg(mutation_path())
+                .arg(
+                    Arg::new("name")
+                        .value_name("NAME")
+                        .value_parser(value_parser!(OsString)),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .value_name("FILE")
+                        .value_parser(value_parser!(OsString))
+                        .requires("name")
+                        .help("Write the named attribute's value here instead of stdout"),
+                )
+                .after_help(
+                    "Examples:\n  fs.squashfs rootfs.sqfs xattr /etc/hostname\n  \
+                     fs.squashfs rootfs.sqfs xattr --text /etc/hostname\n  \
+                     fs.squashfs rootfs.sqfs xattr /bin/tool security.capability -o caps.bin\n\n\
+                     Without NAME, report name and size, sorted by name bytes. Non-UTF-8 \
+                     names are shown lossily with exact bytes in name_hex. --text lists \
+                     size, a tab and name. With NAME, write raw bytes even with --text; \
+                     an empty value succeeds, a missing attribute fails (exit 1). A symlink \
+                     is inspected without following it. -o uses FILE.partial and renames \
+                     on success, as read does. Attributes cannot be set or removed.",
                 ),
         )
         .subcommand(
@@ -359,6 +389,7 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
         "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
+        "xattr" => xattr(&open(target, offset)?, path_arg(sub), sub),
         "get" | "info" => get(
             &open(target, offset)?,
             sub.get_one::<String>("key").map(String::as_str),
@@ -798,6 +829,69 @@ fn read(fs: &Filesystem, path: &[u8], output: Option<&OsString>) -> Result<Outco
         }
     }
     Ok(Outcome::done())
+}
+
+fn xattr(fs: &Filesystem, path: &[u8], sub: &ArgMatches) -> Result<Outcome, CliError> {
+    let inode = fs
+        .lookup_path_bytes(path)
+        .map_err(|e| squashfs_error(path, e))?;
+    if let Some(name) = sub.get_one::<OsString>("name") {
+        let value = fs
+            .get_xattr(&inode, os_bytes(name))
+            .map_err(|e| squashfs_error(path, e))?
+            .ok_or_else(|| {
+                CliError::failed(format!(
+                    "{}: no attribute {}",
+                    show(path),
+                    show(os_bytes(name))
+                ))
+            })?;
+        match sub.get_one::<OsString>("output") {
+            None => {
+                let mut stdout = std::io::stdout().lock();
+                stdout
+                    .write_all(&value)
+                    .and_then(|()| stdout.flush())
+                    .map_err(|e| CliError::failed(format!("write: {e}")))?;
+            }
+            Some(file) => {
+                let dest = std::path::Path::new(file);
+                let mut partial = file.clone();
+                partial.push(".partial");
+                let result =
+                    std::fs::write(&partial, &value).and_then(|()| std::fs::rename(&partial, dest));
+                if let Err(e) = result {
+                    let _ = std::fs::remove_file(&partial);
+                    return Err(CliError::failed(format!("write {}: {e}", dest.display())));
+                }
+            }
+        }
+        return Ok(Outcome::done());
+    }
+    let mut attrs = fs
+        .list_xattrs(&inode)
+        .map_err(|e| squashfs_error(path, e))?;
+    attrs.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut entries = Vec::new();
+    let mut text = Vec::new();
+    for attr in attrs {
+        let mut fields = vec![("name", Json::from(show(&attr.name)))];
+        if std::str::from_utf8(&attr.name).is_err() {
+            fields.push((
+                "name_hex",
+                Json::from(
+                    attr.name
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>(),
+                ),
+            ));
+        }
+        fields.push(("size", Json::from(attr.value.len() as u64)));
+        entries.push(Json::object(fields));
+        text.push(format!("{}\t{}", attr.value.len(), show(&attr.name)));
+    }
+    Ok(Outcome::report(Json::Arr(entries)).with_text(text.join("\n")))
 }
 
 fn flag_names(bits: u16) -> Json {

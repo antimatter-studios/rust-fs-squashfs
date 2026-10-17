@@ -54,6 +54,8 @@ fs.squashfs rootfs.sqfs ls /etc                        # JSON entries; a symlink
 fs.squashfs rootfs.sqfs ls -R --max-depth 8 --limit 1000 /etc
 fs.squashfs rootfs.sqfs stat /etc/hostname             # one path's identity, owner, links, sizes and mtime
 fs.squashfs rootfs.sqfs read /etc/hostname > hostname  # raw bytes, or -o FILE
+fs.squashfs rootfs.sqfs xattr /etc/hostname            # attribute names and byte sizes
+fs.squashfs rootfs.sqfs xattr /bin/tool security.capability -o caps.bin
 fs.squashfs rootfs.sqfs get                            # fs, label (null), sizes, and squashfs.*
 fs.squashfs rootfs.sqfs get squashfs.compression --text
 fs.squashfs --offset 1048576 firmware.bin ls /         # a filesystem embedded in a larger file
@@ -80,6 +82,15 @@ count and xattr index under `squashfs`. SquashFS stores only whole-second
 `mtime`; other times and all nanoseconds are null. `allocated_bytes` is null
 because the format stores no per-file allocation total for compressed,
 potentially shared data. Inapplicable layout fields are null too.
+
+`xattr PATH` lists extended attributes as JSON name/size entries, sorted by
+name bytes; no attributes is `[]`. Non-UTF-8 names are shown lossily with
+their exact bytes in `name_hex`. `--text` prints size, a tab and name.
+`xattr PATH NAME` writes raw value bytes, including empty and binary values,
+even with `--text`; `-o FILE` writes through `FILE.partial` and renames on
+success. Missing paths and attributes fail with exit 1 and no stdout.
+Symlinks are inspected without following them. Setting and removing
+attributes are not supported.
 
 `ls --recursive` (`-R`) adds volume-absolute `path` and relative `depth` to
 each entry. Direct children have depth 1; the starting directory is omitted,

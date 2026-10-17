@@ -358,8 +358,8 @@ tasks:
     cmds:
       - scripts/tools.sh --check
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 140 9000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
-      # Recursive listing adds one mounted reference-tree and malformed-graph case.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 10'
+      # Xattr listing and every value add one guest-kernel case to the previous floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 11'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -392,8 +392,8 @@ tasks:
         # shellcheck disable=SC2086  # the words are the point
         bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 760 38000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        # Recursive listing adds one kernel case to the previous floor.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 298
+        # Xattr inspection adds one kernel case to the previous floor.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 299
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -425,8 +425,8 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
-      # Recursive listing adds one kernel case to the previous floor.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 323'
+      # Xattr inspection adds one kernel case to the previous floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 324'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -466,7 +466,8 @@ tasks:
       # Mutation refusals add 357 checks to the previous CLI floor:
       # 58 calls x 5, one missing-image check, three stdin checks,
       # 14 usage cases x 3, and seven help cases x 3 = 357 checks.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 527'
+      # Xattr adds 39 checks and one generated-documentation check.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 567'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
