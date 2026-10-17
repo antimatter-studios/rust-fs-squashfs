@@ -358,9 +358,8 @@ tasks:
     cmds:
       - scripts/tools.sh --check
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 140 9000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
-      # 7: the 2 before, plus tests/cli_fs_kernel.rs's five -- the tool
-      # held to the kernel on every compressor it supports.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 7'
+      # 9: the previous 7 plus cli_stat_kernel.rs's two reference layouts.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 9'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -393,7 +392,8 @@ tasks:
         # shellcheck disable=SC2086  # the words are the point
         bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 760 38000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        bash ../rust-fs-core/scripts/test-floor.sh vm 295
+        # Two stat kernel cases are added to the previous floor.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 297
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -425,7 +425,8 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 320'
+      # Two stat kernel cases are added to the previous floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 322'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -462,7 +463,8 @@ tasks:
     # completions; the floor is about 95% of that, and it only goes up.
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:cli cli 24 900 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 89'
+      # stat adds 30 checks and one generated-subcommand documentation check.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 120'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
