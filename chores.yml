@@ -375,8 +375,8 @@ tasks:
     cmds:
       - scripts/tools.sh --check
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 180 15000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
-      # 9: the previous 7 plus cli_stat_kernel.rs's two reference layouts.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 9'
+      # Recursive listing adds one mounted reference-tree and malformed-graph case.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 10'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -409,8 +409,8 @@ tasks:
         # shellcheck disable=SC2086  # the words are the point
         bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 920 46000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        # Two stat kernel cases are added to the previous floor.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 297
+        # Recursive listing adds one kernel case to the previous floor.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 298
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -442,8 +442,8 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
-      # Two stat kernel cases are added to the previous floor.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 322'
+      # Recursive listing adds one kernel case to the previous floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 323'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -480,8 +480,8 @@ tasks:
     # completions; the floor is about 95% of that, and it only goes up.
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:cli cli 24 900 -- scripts/test-cli.sh'
-      # stat adds 30 checks and one generated-subcommand documentation check.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 120'
+      # Recursive listing adds 50 checks to the previous CLI floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 170'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
