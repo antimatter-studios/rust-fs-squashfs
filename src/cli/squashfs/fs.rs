@@ -1,7 +1,7 @@
 //! `fs.squashfs <target> <verb>`: an errand inside a SquashFS image,
 //! without mounting it.
 //!
-//! The verbs are the shared set every `fs.<fs>` answers: `ls`, `read`,
+//! The verbs are the shared set every `fs.<fs>` answers: `ls`, `stat`, `read`,
 //! `get`/`info`, and `write`, `mkdir`, `set`, `resize`. SquashFS is a
 //! read-only format, so the last four exist and refuse, with exit status 3
 //! and "SquashFS is read-only": a script moved here from a writable
@@ -106,6 +106,26 @@ fn command() -> Cmd {
                      fs.squashfs rootfs.sqfs ls / | jq -r '.[].name'\n  \
                      fs.squashfs rootfs.sqfs ls /bin/sh | jq -r '.[0].target'\n  \
                      fs.squashfs rootfs.sqfs ls --text /",
+                ),
+        )
+        .subcommand(
+            Cmd::new("stat")
+                .about("Report one path: identity, type, mode, owner, links, sizes and stored time")
+                .arg(
+                    Arg::new("path")
+                        .value_name("PATH")
+                        .required(true)
+                        .value_parser(value_parser!(OsString)),
+                )
+                .after_help(
+                    "Examples:\n  fs.squashfs rootfs.sqfs stat /etc/hostname\n  \
+                     fs.squashfs rootfs.sqfs stat /var/log | jq .nlink\n  \
+                     fs.squashfs rootfs.sqfs stat --text /bin/sh\n\n\
+                     A symlink is reported, not followed. SquashFS stores only mtime, as \
+                     whole seconds since the epoch. Other times, nanoseconds and allocated_bytes \
+                     are null: the format stores no per-file allocation total. Raw inode type, \
+                     fragment index/offset, block count and xattr index are under squashfs; \
+                     inapplicable fields are null.",
                 ),
         )
         .subcommand(
@@ -229,6 +249,7 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         .unwrap_or(0);
     match verb {
         "ls" => ls(&open(target, offset)?, path_arg(sub)),
+        "stat" => stat(&open(target, offset)?, path_arg(sub)),
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
         "get" | "info" => get(
             &open(target, offset)?,
@@ -396,6 +417,85 @@ fn ls(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(Outcome::report(Json::Arr(entries)).with_text(text))
+}
+
+/// The shared stat fields, then the inode's SquashFS layout. Fragments
+/// can be shared and compressed: no per-file allocation total is stored.
+/// Neither that total nor unstored times or nanoseconds are invented.
+fn stat(fs: &Filesystem, path: &[u8]) -> Result<Outcome, CliError> {
+    let inode = fs
+        .lookup_path_bytes(path)
+        .map_err(|e| squashfs_error(path, e))?;
+    let uid = fs
+        .resolve_uid(inode.uid_idx)
+        .map_err(|e| squashfs_error(path, e))?;
+    let gid = fs
+        .resolve_gid(inode.gid_idx)
+        .map_err(|e| squashfs_error(path, e))?;
+    let kind = inode.file_type();
+    let mut fields = vec![("path", Json::from(show(path)))];
+    if std::str::from_utf8(path).is_err() {
+        fields.push((
+            "path_hex",
+            Json::from(path.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ));
+    }
+    fields.extend([
+        ("inode", Json::from(inode.inode_number)),
+        ("type", Json::from(type_name(kind))),
+        (
+            "mode",
+            Json::from(format!("{:04o}", inode.permissions & 0o7777)),
+        ),
+        ("uid", Json::from(uid)),
+        ("gid", Json::from(gid)),
+        ("nlink", Json::from(inode.nlink)),
+        ("size", Json::from(inode.file_size)),
+        ("allocated_bytes", Json::Null),
+        ("atime", Json::Null),
+        ("atime_nsec", Json::Null),
+        ("mtime", Json::from(i64::from(inode.mtime))),
+        ("mtime_nsec", Json::Null),
+        ("ctime", Json::Null),
+        ("ctime_nsec", Json::Null),
+        ("btime", Json::Null),
+        ("btime_nsec", Json::Null),
+    ]);
+    match kind {
+        FileType::Symlink => fields.push(("target", Json::from(show(&inode.symlink_target)))),
+        FileType::CharDev | FileType::BlockDev => fields.extend([
+            ("major", Json::from(inode.rdev_major())),
+            ("minor", Json::from(inode.rdev_minor())),
+        ]),
+        _ => {}
+    }
+    fields.push((
+        "squashfs",
+        Json::object([
+            ("inode_type", Json::from(inode.inode_type)),
+            (
+                "fragment_index",
+                Json::from(inode.has_fragment().then_some(inode.fragment_index)),
+            ),
+            (
+                "fragment_offset",
+                Json::from(inode.has_fragment().then_some(inode.fragment_offset)),
+            ),
+            (
+                "block_count",
+                Json::from(
+                    inode
+                        .is_regular_file()
+                        .then_some(inode.block_sizes.len() as u64),
+                ),
+            ),
+            (
+                "xattr_index",
+                Json::from(inode.has_xattrs().then_some(inode.xattr_index)),
+            ),
+        ]),
+    ));
+    Ok(Outcome::report(Json::object(fields)))
 }
 
 /// Stream a regular file's bytes. Each chunk is read before it is

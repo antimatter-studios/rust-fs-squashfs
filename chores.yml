@@ -52,16 +52,33 @@ chore_min_version: 0.6.0
 #                                                      added 91 l / 14,682 B of
 #                                                      them, measured on CI run
 #                                                      36614252496
-#     kernel     33 l /   4,082 B    140 l /  9,000 B  five kernel mounts and a
-#                 2 tests                              refusal; sized for cold
+#     kernel    110 l /   9,861 B    180 l / 15,000 B  measured on CI run
+#                11 tests                              39061629777 (x86_64):
+#                                                      --show-output keeps each
+#                                                      mksquashfs and mount as
+#                                                      evidence, ~250 B a line.
+#                                                      cli_stat_kernel.rs added
+#                                                      23 l / 1,593 B of it, so
+#                                                      a one-test kernel file
+#                                                      is ~17-19 l / 1-1.5 KB;
+#                                                      room for two more, then
+#                                                      ~20%. Was 140 l / 9,000 B
+#                                                      from 33 l / 4,082 B at
+#                                                      2 tests
 #     suite     436 l /  22,594 B    600 l / 30,000 B  measured WARM (1
 #               308 tests                              Compiling); cold is ~496
-#     vm        591 l /  28,903 B    760 l / 38,000 B  measured COLD in the
-#               308 tests                              guest (61 Compiling,
-#                                                      241s), plus room for
-#                                                      vagrant's boot retries,
-#                                                      which this repository
-#                                                      does not control
+#     vm        747 l /  37,605 B    920 l / 46,000 B  measured COLD in the
+#               377 tests                              guest (61 Compiling) on
+#                                                      CI run 39061629777, plus
+#                                                      room for vagrant's boot
+#                                                      retries, which this
+#                                                      repository does not
+#                                                      control, and ~20%. Was
+#                                                      760 l / 38,000 B from
+#                                                      591 l / 28,903 B at 308
+#                                                      tests, which left 13 l
+#                                                      and 395 B for the next
+#                                                      test
 #     cli        14 l /     510 B     24 l /    900 B  the installed tools, no
 #                94 checks                             cargo output at all; every
 #                                                      file is three lines when it
@@ -357,10 +374,9 @@ tasks:
     # corruption the kernel has to refuse.
     cmds:
       - scripts/tools.sh --check
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 140 9000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
-      # 7: the 2 before, plus tests/cli_fs_kernel.rs's five -- the tool
-      # held to the kernel on every compressor it supports.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 7'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 180 15000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      # 9: the previous 7 plus cli_stat_kernel.rs's two reference layouts.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 9'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -391,9 +407,10 @@ tasks:
           guest_args="$guest_args $arg"
         done
         # shellcheck disable=SC2086  # the words are the point
-        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 760 38000 -- \
+        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 920 46000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
-        bash ../rust-fs-core/scripts/test-floor.sh vm 295
+        # Two stat kernel cases are added to the previous floor.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 297
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -425,7 +442,8 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 320'
+      # Two stat kernel cases are added to the previous floor.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 322'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -462,7 +480,8 @@ tasks:
     # completions; the floor is about 95% of that, and it only goes up.
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:cli cli 24 900 -- scripts/test-cli.sh'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 89'
+      # stat adds 30 checks and one generated-subcommand documentation check.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 120'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
