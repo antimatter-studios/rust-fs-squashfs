@@ -581,8 +581,10 @@ printf %s "$status" > {status}"#,
         );
     };
     let (stdout, stderr) = run.streams();
-    println!("[oracle vm] mksquashfs <staged tree> {out}{argv} -> {code}",
-             out = out.display());
+    println!(
+        "[oracle vm] mksquashfs <staged tree> {out}{argv} -> {code}",
+        out = out.display()
+    );
     Output {
         status: ExitStatusExt::from_raw(code << 8),
         stdout,
