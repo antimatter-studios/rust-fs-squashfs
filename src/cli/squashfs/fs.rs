@@ -2,8 +2,8 @@
 //! without mounting it.
 //!
 //! The verbs are the shared set every `fs.<fs>` answers: `ls`, `stat`, `read`,
-//! `get`/`info`, and `write`, `mkdir`, `set`, `resize`. SquashFS is a
-//! read-only format, so the last four exist and refuse, with exit status 3
+//! `get`/`info`, and `write`, `mkdir`, `rm`, `rmdir`, `mv`, `ln`, `truncate`,
+//! `set`, `resize`. SquashFS is a read-only format, so mutations refuse with exit status 3
 //! and "SquashFS is read-only": a script moved here from a writable
 //! filesystem fails loudly instead of meaning something else.
 //!
@@ -185,33 +185,88 @@ fn command() -> Cmd {
                 ),
         )
         .subcommand(
-            Cmd::new("write")
-                .about("Refused: SquashFS is read-only")
-                .arg(
-                    Arg::new("path")
-                        .value_name("PATH")
-                        .required(true)
-                        .value_parser(value_parser!(OsString)),
-                )
-                .after_help(
-                    "Examples:\n  fs.squashfs rootfs.sqfs write /etc/hostname < hostname\n\n\
-                     Answers `SquashFS is read-only` (exit 3) and reads nothing: rebuild the \
-                     image with mksquashfs instead.",
-                ),
+            refused_command(
+                "write",
+                "fs.squashfs rootfs.sqfs write /etc/hostname < hostname\n  \
+                 fs.squashfs rootfs.sqfs write /log --at 1024 < chunk",
+            )
+            .arg(mutation_path())
+            .arg(
+                Arg::new("at")
+                    .long("at")
+                    .value_name("BYTES")
+                    .value_parser(value_parser!(u64))
+                    .help("Position inside the file, not the filesystem's --offset in TARGET"),
+            ),
         )
         .subcommand(
-            Cmd::new("mkdir")
-                .about("Refused: SquashFS is read-only")
-                .arg(
-                    Arg::new("path")
-                        .value_name("PATH")
-                        .required(true)
-                        .value_parser(value_parser!(OsString)),
-                )
-                .after_help(
-                    "Examples:\n  fs.squashfs rootfs.sqfs mkdir /backup\n\n\
-                     Answers `SquashFS is read-only` (exit 3).",
-                ),
+            refused_command(
+                "mkdir",
+                "fs.squashfs rootfs.sqfs mkdir /backup\n  \
+                 fs.squashfs rootfs.sqfs mkdir --parents /backup/2026",
+            )
+            .arg(mutation_path())
+            .arg(
+                Arg::new("parents")
+                    .long("parents")
+                    .short('p')
+                    .action(ArgAction::SetTrue)
+                    .help("Create missing parent directories too"),
+            ),
+        )
+        .subcommand(
+            refused_command("rm", "fs.squashfs rootfs.sqfs rm /notes.txt").arg(mutation_path()),
+        )
+        .subcommand(
+            refused_command("rmdir", "fs.squashfs rootfs.sqfs rmdir /backup").arg(mutation_path()),
+        )
+        .subcommand(
+            refused_command(
+                "mv",
+                "fs.squashfs rootfs.sqfs mv /notes.txt /archive/notes.txt",
+            )
+            .arg(
+                Arg::new("source")
+                    .value_name("SOURCE")
+                    .required(true)
+                    .value_parser(value_parser!(OsString)),
+            )
+            .arg(mutation_path()),
+        )
+        .subcommand(
+            refused_command(
+                "ln",
+                "fs.squashfs rootfs.sqfs ln /notes.txt /also-notes.txt\n  \
+                 fs.squashfs rootfs.sqfs ln -s ../etc/hostname /hostname",
+            )
+            .arg(
+                Arg::new("symbolic")
+                    .short('s')
+                    .long("symbolic")
+                    .action(ArgAction::SetTrue)
+                    .help("Make a symbolic link whose target is TARGET, as given"),
+            )
+            .arg(
+                Arg::new("target")
+                    .value_name("TARGET")
+                    .required(true)
+                    .value_parser(value_parser!(OsString)),
+            )
+            .arg(mutation_path()),
+        )
+        .subcommand(
+            refused_command(
+                "truncate",
+                "fs.squashfs rootfs.sqfs truncate /log.txt 0\n  \
+                 fs.squashfs rootfs.sqfs truncate /sparse.img 1073741824",
+            )
+            .arg(mutation_path())
+            .arg(
+                Arg::new("size")
+                    .value_name("BYTES")
+                    .required(true)
+                    .value_parser(value_parser!(u64)),
+            ),
         )
         .subcommand(key_command(
             "get",
@@ -255,6 +310,23 @@ fn command() -> Cmd {
         )
 }
 
+fn refused_command(name: &'static str, examples: &'static str) -> Cmd {
+    Cmd::new(name)
+        .about("Refused: SquashFS is read-only")
+        .after_help(format!(
+            "Examples:\n  {examples}\n\n\
+             Answers `SquashFS is read-only` (exit 3) before opening the image or reading \
+             stdin. Rebuild the image with mksquashfs instead."
+        ))
+}
+
+fn mutation_path() -> Arg {
+    Arg::new("path")
+        .value_name("PATH")
+        .required(true)
+        .value_parser(value_parser!(OsString))
+}
+
 fn key_command(name: &'static str, about: &'static str) -> Cmd {
     Cmd::new(name)
         .about(about)
@@ -293,9 +365,11 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         ),
         // Refused before the image is opened, and `write` before stdin is
         // read: nothing about the target can change the answer.
-        "write" | "mkdir" | "set" | "resize" => Err(CliError::refused(format!(
-            "{verb}: {READ_ONLY}; rebuild the image with mksquashfs instead"
-        ))),
+        "write" | "mkdir" | "rm" | "rmdir" | "mv" | "ln" | "truncate" | "set" | "resize" => {
+            Err(CliError::refused(format!(
+                "{verb}: {READ_ONLY}; rebuild the image with mksquashfs instead"
+            )))
+        }
         other => unreachable!("clap knows no verb {other}"),
     }
 }

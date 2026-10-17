@@ -480,8 +480,10 @@ tasks:
     # completions; the floor is about 95% of that, and it only goes up.
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:cli cli 24 900 -- scripts/test-cli.sh'
-      # Recursive listing adds 50 checks to the previous CLI floor.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 170'
+      # Mutation refusals add 357 checks to the previous CLI floor:
+      # 58 calls x 5, one missing-image check, three stdin checks,
+      # 14 usage cases x 3, and seven help cases x 3 = 357 checks.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 527'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

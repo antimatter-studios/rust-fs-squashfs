@@ -67,12 +67,89 @@ for verb in "write /new" "mkdir /newdir" "set label X" "resize 1G --force"; do
     jq_check "$verb says SquashFS is read-only" '.code == 3 and (.error | test("SquashFS is read-only"))' "$SANDBOX/ro.err"
 done
 
+# Every mutation form parses, but refuses before opening even a missing or
+# invalid image. Hash each existing target before and after every refusal;
+# also compare the real image with its saved copy, byte for byte.
+cp "$img" "$SANDBOX/readonly.sqfs"
+cp "$img" "$SANDBOX/before.sqfs"
+chmod 444 "$SANDBOX/readonly.sqfs"
+printf 'not a SquashFS image\n' >"$SANDBOX/foreign.img"
+refuse_mutation() {
+    local target="$1" what="$2" before=absent after=absent
+    shift 2
+    if [ -f "$target" ]; then before="$(sha256 <"$target")"; fi
+    fs.squashfs "$target" "$@" <&- >"$SANDBOX/mutation.out" 2>"$SANDBOX/mutation.err"
+    check "$what exits 3" test $? -eq 3
+    check "$what prints nothing on stdout" test ! -s "$SANDBOX/mutation.out"
+    jq_check "$what uses the existing refusal" \
+        ". == {\"error\": \"$1: SquashFS is read-only; rebuild the image with mksquashfs instead\", \"code\": 3}" \
+        "$SANDBOX/mutation.err"
+    if [ -f "$target" ]; then after="$(sha256 <"$target")"; fi
+    check "$what preserves the target's SHA-256 or absence" test "$before" = "$after"
+    check "$what preserves every image byte" cmp -s "$SANDBOX/readonly.sqfs" "$SANDBOX/before.sqfs"
+}
+
+for mutation in \
+    "write /hello.txt" "write /hello.txt --at 0" \
+    "write --at 18446744073709551615 /hello.txt" \
+    "mkdir /newdir" "mkdir --parents /new/dir" "mkdir -p /new/dir" \
+    "rm /hello.txt" "rmdir /sub" "mv /hello.txt /renamed" \
+    "ln /hello.txt /hardlink" "ln -s ../hello.txt /symlink" \
+    "ln --symbolic /hello.txt /symlink" \
+    "truncate /hello.txt 0" "truncate /hello.txt 18446744073709551615" \
+    "set label X" "resize 1G --force"; do
+    for target in "$SANDBOX/readonly.sqfs" "$SANDBOX/foreign.img" "$SANDBOX/absent.sqfs"; do
+        # shellcheck disable=SC2086  # each string is an intentional argument list
+        refuse_mutation "$target" "$mutation on $(basename "$target")" $mutation
+    done
+done
+check "no mutation creates a missing image" test ! -e "$SANDBOX/absent.sqfs"
+refuse_mutation "$SANDBOX/readonly.sqfs" "mv paths with spaces" mv '/old name' '/new name'
+refuse_mutation "$SANDBOX/readonly.sqfs" "ln target beginning with a dash" ln -s -- '-target' '/new link'
+
+# A refused write does not consume stdin, even when --at is present.
+printf 'unconsumed input\n' >"$SANDBOX/stdin"
+exec 9<"$SANDBOX/stdin"
+fs.squashfs "$SANDBOX/readonly.sqfs" write /hello.txt --at 1 <&9 \
+    >"$SANDBOX/stdin.out" 2>"$SANDBOX/stdin.err"
+check "write --at with stdin exits 3" test $? -eq 3
+check "write --at leaves stdin unread" test "$(cat <&9)" = 'unconsumed input'
+exec 9<&-
+check "write --at leaves the image intact" cmp -s "$SANDBOX/readonly.sqfs" "$SANDBOX/before.sqfs"
+
+# Malformed invocations remain usage errors, not format refusals.
+for mutation in "rm" "rmdir" "mv /old" "ln /target" "ln -s /target" \
+    "truncate /hello.txt" "truncate /hello.txt -1" "truncate /hello.txt nope" \
+    "truncate /hello.txt 18446744073709551616" "write /hello.txt --at" \
+    "write /hello.txt --at -1" "write /hello.txt --at nope" \
+    "write /hello.txt --at 18446744073709551616" "mkdir --parents"; do
+    # shellcheck disable=SC2086  # each string is an intentional argument list
+    fs.squashfs "$SANDBOX/absent.sqfs" $mutation <&- >"$SANDBOX/usage.out" 2>"$SANDBOX/usage.err"
+    check "$mutation exits 2" test $? -eq 2
+    check "$mutation prints nothing on stdout" test ! -s "$SANDBOX/usage.out"
+    jq_check "$mutation is a structured usage error" '.code == 2 and (.error|type) == "string"' "$SANDBOX/usage.err"
+done
+
+for verb in rm rmdir mv ln truncate write mkdir; do
+    fs.squashfs "$SANDBOX/absent.sqfs" "$verb" --help >"$SANDBOX/help" 2>"$SANDBOX/help.err"
+    check "$verb help exits 0" test $? -eq 0
+    check "$verb help names the format refusal" grep -q 'SquashFS is read-only' "$SANDBOX/help"
+    check "$verb help includes examples" grep -q '^Examples:' "$SANDBOX/help"
+done
+
 # --offset: the image embedded a MiB into a larger file.
 { head -c 1048576 /dev/zero; cat "$img"; } >"$SANDBOX/embedded.img"
 check "--offset reaches the embedded image" \
     test "$(fs.squashfs --offset 1048576 "$SANDBOX/embedded.img" read /hello.txt | od -An -c | tr -d ' ')" = 'hi\n'
 fs.squashfs "$SANDBOX/embedded.img" ls >"$SANDBOX/noff.out" 2>"$SANDBOX/noff.err"
 check "without --offset the embedded image is refused" test $? -eq 1 -a ! -s "$SANDBOX/noff.out"
+for mutation in "rm /hello.txt" "rmdir /sub" "mv /hello.txt /renamed" \
+    "ln /hello.txt /hardlink" "ln -s hello.txt /symlink" \
+    "truncate /hello.txt 0" "mkdir --parents /new/dir" "write /hello.txt --at 2"; do
+    # shellcheck disable=SC2086  # --at is a file position; --offset is a device offset
+    refuse_mutation "$SANDBOX/embedded.img" "$mutation with a filesystem offset" \
+        $mutation --offset 1048576
+done
 
 # Failures: status 1, a structured error, nothing on stdout -- never a panic.
 refuse() {
