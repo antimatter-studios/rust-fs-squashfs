@@ -60,7 +60,17 @@ fs.squashfs --offset 1048576 firmware.bin ls /         # a filesystem embedded i
 rust-fs-squashfs doctor --text                         # is the fs.squashfs on PATH this one?
 ```
 
-A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that. `write`, `mkdir`, `set` and `resize` exist and answer "SquashFS is read-only" with status 3, so a script moved here from a writable filesystem fails loudly. `--version` prints `<tool> (rust-fs-squashfs) <version>`.
+A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that. `--version` prints `<tool> (rust-fs-squashfs) <version>`.
+
+`write PATH [--at BYTES]`, `mkdir PATH [--parents]` (`-p`), `rm PATH`,
+`rmdir PATH`, `mv SOURCE PATH`, `ln [-s|--symbolic] TARGET PATH`,
+`truncate PATH BYTES`, `set KEY VALUE` and `resize SIZE [--force]` exist
+and answer "SquashFS is read-only" with status 3 and nothing on stdout.
+The refusal happens before opening the image or reading stdin, even for a
+missing or invalid image. `--at` is a position inside a file; `--offset`
+remains the filesystem's byte offset inside the image. Byte counts accept
+unsigned 64-bit integers; missing operands and invalid numbers are usage
+errors (status 2). Every verb's help includes an example.
 
 `chore cli:install` builds the tools and stages them under every name in `tmp/cli/bin` (it prints the `PATH` line to use); `chore test:cli` tests them as installed.
 
