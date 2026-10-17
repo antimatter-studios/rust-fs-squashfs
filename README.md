@@ -51,6 +51,7 @@ One binary, `rust-fs-squashfs`, behind the `cli` feature (so the library a consu
 
 ```sh
 fs.squashfs rootfs.sqfs ls /etc                        # JSON entries; a symlink's carries its target
+fs.squashfs rootfs.sqfs ls -R --max-depth 8 --limit 1000 /etc
 fs.squashfs rootfs.sqfs stat /etc/hostname             # one path's identity, owner, links, sizes and mtime
 fs.squashfs rootfs.sqfs read /etc/hostname > hostname  # raw bytes, or -o FILE
 fs.squashfs rootfs.sqfs get                            # fs, label (null), sizes, and squashfs.*
@@ -69,6 +70,20 @@ count and xattr index under `squashfs`. SquashFS stores only whole-second
 `mtime`; other times and all nanoseconds are null. `allocated_bytes` is null
 because the format stores no per-file allocation total for compressed,
 potentially shared data. Inapplicable layout fields are null too.
+
+`ls --recursive` (`-R`) adds volume-absolute `path` and relative `depth` to
+each entry. Direct children have depth 1; the starting directory is omitted,
+and a starting file or symlink has depth 0. The walk is depth first, with
+names sorted by bytes in each directory. Symlinks are listed without being
+followed. A directory inode already visited is listed with `revisited: true`
+and is not entered again.
+
+The finite defaults are `--max-depth 64` and `--limit 100000`. An entry that
+would exceed either bound stops the walk; exact fits succeed and zero is
+allowed. A bound or unreadable directory produces exit 1, naming the bound
+or stopped path on stderr, while the collected entries remain on stdout as
+a valid JSON array (or full paths with `--text`). Failure to open the image
+or resolve the starting path prints no report. Plain `ls` is unchanged.
 
 ## Library use
 
