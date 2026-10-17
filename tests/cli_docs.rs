@@ -65,7 +65,10 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
             "no fs.squashfs-{verb}.1"
         );
     }
-    let ls = std::fs::read_to_string(share.join("man/man1/fs.squashfs-ls.1")).unwrap();
+    // roff escapes every hyphen (`\-\-max\-depth`); search the text a reader sees.
+    let ls = std::fs::read_to_string(share.join("man/man1/fs.squashfs-ls.1"))
+        .unwrap()
+        .replace("\\-", "-");
     for option in ["recursive", "max-depth", "limit"] {
         assert!(ls.contains(option), "ls man page omits {option}");
     }
