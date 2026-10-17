@@ -51,6 +51,7 @@ One binary, `rust-fs-squashfs`, behind the `cli` feature (so the library a consu
 
 ```sh
 fs.squashfs rootfs.sqfs ls /etc                        # JSON entries; a symlink's carries its target
+fs.squashfs rootfs.sqfs stat /etc/hostname             # one path's identity, owner, links, sizes and mtime
 fs.squashfs rootfs.sqfs read /etc/hostname > hostname  # raw bytes, or -o FILE
 fs.squashfs rootfs.sqfs get                            # fs, label (null), sizes, and squashfs.*
 fs.squashfs rootfs.sqfs get squashfs.compression --text
@@ -61,6 +62,13 @@ rust-fs-squashfs doctor --text                         # is the fs.squashfs on P
 A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that. `write`, `mkdir`, `set` and `resize` exist and answer "SquashFS is read-only" with status 3, so a script moved here from a writable filesystem fails loudly. `--version` prints `<tool> (rust-fs-squashfs) <version>`.
 
 `chore cli:install` builds the tools and stages them under every name in `tmp/cli/bin` (it prints the `PATH` line to use); `chore test:cli` tests them as installed.
+
+`stat PATH` reports a symlink itself, including its target. The shared fields
+come first, with SquashFS's inode type, fragment index and offset, data block
+count and xattr index under `squashfs`. SquashFS stores only whole-second
+`mtime`; other times and all nanoseconds are null. `allocated_bytes` is null
+because the format stores no per-file allocation total for compressed,
+potentially shared data. Inapplicable layout fields are null too.
 
 ## Library use
 
