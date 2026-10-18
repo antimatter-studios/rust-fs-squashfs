@@ -52,21 +52,25 @@ chore_min_version: 0.6.0
 #                                                      added 91 l / 14,682 B of
 #                                                      them, measured on CI run
 #                                                      36614252496
-#     kernel    110 l /   9,861 B    180 l / 15,000 B  measured on CI run
-#                11 tests                              39061629777 (x86_64):
-#                                                      --show-output keeps each
-#                                                      mksquashfs and mount as
-#                                                      evidence, ~250 B a line.
-#                                                      cli_stat_kernel.rs added
-#                                                      23 l / 1,593 B of it, so
-#                                                      a one-test kernel file
-#                                                      is ~17-19 l / 1-1.5 KB;
-#                                                      room for two more, then
-#                                                      ~20%. Was 140 l / 9,000 B
-#                                                      from 33 l / 4,082 B at
-#                                                      2 tests
-#     suite     436 l /  22,594 B    600 l / 30,000 B  measured WARM (1
-#               308 tests                              Compiling); cold is ~496
+#     kernel    193 l /  18,850 B    250 l / 24,500 B  measured on merge-queue run
+#                13 tests                              39088564228 (x86_64), the
+#                                                      top of the open chain
+#                                                      through #202: the layers
+#                                                      above #196 add no kernel-
+#                                                      tier file. --show-output
+#                                                      keeps each mksquashfs and
+#                                                      mount as evidence; ~30%.
+#                                                      Was 180 l / 15,000 B from
+#                                                      110 l / 9,861 B at 11
+#                                                      tests (run 39061629777),
+#                                                      83 l / 8,989 B fewer
+#     suite     577 l /  30,301 B    750 l / 39,400 B  measured WARM (2
+#               381 tests                              Compiling) on merge-queue
+#                                                      run 39094000014 (x86_64),
+#                                                      #196 on main; ~30%. Was
+#                                                      600 l / 30,000 B from
+#                                                      436 l / 22,594 B at 308
+#                                                      tests; cold was ~496 l
 #     vm        747 l /  37,605 B    920 l / 46,000 B  measured COLD in the
 #               377 tests                              guest (61 Compiling) on
 #                                                      CI run 39061629777, plus
@@ -134,7 +138,8 @@ vars:
   # v0.2.23 is the first release with ../rust-fs-core/scripts/package-cli.sh and the
   # release-cli workflow release.yml calls (#154): the tarball's packaging
   # is core's now, and the path sibling must carry it.
-  FS_CORE_REF: v0.3.13
+  # v0.3.14 supplies the shared bounded single-file export transfer.
+  FS_CORE_REF: v0.3.14
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
@@ -374,9 +379,10 @@ tasks:
     # corruption the kernel has to refuse.
     cmds:
       - scripts/tools.sh --check
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 180 15000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 250 24500 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # Xattr listing and every value add one guest-kernel case to the previous floor.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 11'
+      # cli_export_kernel.rs adds two cases against Linux and unsquashfs.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 13'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -410,7 +416,8 @@ tasks:
         bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 920 46000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # Xattr inspection adds one kernel case to the previous floor.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 299
+        # Bounded export adds two kernel cases; execution remains CI-only.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 301
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -439,11 +446,12 @@ tasks:
       - task: test:images
       - task: test:oracle
       - task: test:kernel
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 600 30000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 750 39400 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
       # Xattr inspection adds one kernel case to the previous floor.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 324'
+      # Bounded export adds two kernel cases; execution remains CI-only.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 326'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -484,7 +492,8 @@ tasks:
       # 58 calls x 5, one missing-image check, three stdin checks,
       # 14 usage cases x 3, and seven help cases x 3 = 357 checks.
       # Xattr adds 39 checks and one generated-documentation check.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 567'
+      # Generated documentation checks one additional export subcommand.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 568'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob
