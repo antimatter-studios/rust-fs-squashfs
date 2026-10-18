@@ -258,3 +258,48 @@ fn oracle_xz_bcj_x86_reads_real_machine_code() {
     );
     assert_eq!(read_whole_file(&fs, "/hello.txt"), b"hi\n");
 }
+
+/// A STAGE THAT FAILS IS THE CALL'S FAILURE, BY NAME. The stage and the
+/// build once ran together on the left of `||`, where bash turns `set -e`
+/// off, so a stage that stopped half way still had `mksquashfs` build the
+/// half it staged and the call reported that build's 0. The test then
+/// failed later, on a file the stage never got to make (#198). Here the
+/// stage exits 1 after writing a marker to stderr: the call has to panic
+/// naming the stage, its status and that marker, and no image may exist.
+#[test]
+fn oracle_failing_stage_is_reported_by_name() {
+    let scratch = ScratchDir::new("failing-stage");
+    let image = scratch.join("never-built.sqfs");
+    let stage = "printf 'half staged\\n' > half.txt\n\
+                 printf 'stage-marker-199\\n' >&2\n\
+                 exit 1\n";
+
+    let outcome = std::panic::catch_unwind(|| {
+        mksquashfs_from_guest_tree(&image, stage, &["-noappend", "-no-progress"])
+    });
+    let message = match outcome {
+        Ok(made) => panic!(
+            "a stage that exits 1 was reported as {:?}, and an image was built from \
+             what it staged before failing:\n{}{}",
+            made.status,
+            String::from_utf8_lossy(&made.stdout),
+            String::from_utf8_lossy(&made.stderr)
+        ),
+        Err(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    };
+    for needle in ["stage script", "exited 1", "stage-marker-199"] {
+        assert!(
+            message.contains(needle),
+            "the failing stage's panic does not name `{needle}`:\n{message}"
+        );
+    }
+    assert!(
+        !image.exists(),
+        "{} was built although the stage that feeds it failed",
+        image.display()
+    );
+}
