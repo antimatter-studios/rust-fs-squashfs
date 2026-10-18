@@ -514,7 +514,9 @@ pub fn guest_base64(bytes: &[u8]) -> String {
 ///
 /// `stage` is a `bash -euo pipefail` script run with the empty source
 /// directory as its working directory; `$SRC` also names it. Its
-/// failure is the call's failure — there is nothing to skip.
+/// failure is the call's failure — there is nothing to skip: the call
+/// panics naming the stage, its exit status and its stderr, and
+/// `mksquashfs` never runs on what a failed stage left behind.
 ///
 /// ONE GUEST CALL for the staging and the build together.
 ///
@@ -540,6 +542,7 @@ pub fn mksquashfs_from_guest_tree(out: &Path, stage: &str, args: &[&str]) -> Out
     );
 
     let run = Run::new();
+    let stage_status = run.status.with_extension("stage");
     let mut argv = String::new();
     for argument in args {
         argv.push(' ');
@@ -553,12 +556,17 @@ work="$(mktemp -d /var/tmp/fs-squashfs-stage.XXXXXX)"
 SRC="$work/src"
 mkdir -p "$SRC"
 status=0
+stage_status=0
 {{
     cd "$SRC"
-    SRC="$SRC" bash -euo pipefail -c {stage}
-    mksquashfs "$SRC" {out}{argv}
+    if SRC="$SRC" bash -euo pipefail -c {stage}; then
+        mksquashfs "$SRC" {out}{argv}
+    else
+        stage_status=$?
+    fi
 }} > {stdout} 2> {stderr} || status=$?
 rm -rf "$work"
+printf %s "$stage_status" > {stage_status}
 printf %s "$status" > {status}"#,
         dir = guest_quote(&run.dir.to_string_lossy()),
         out = guest_quote(&out.to_string_lossy()),
@@ -567,6 +575,7 @@ printf %s "$status" > {status}"#,
         stdout = guest_quote(&run.stdout.to_string_lossy()),
         stderr = guest_quote(&run.stderr.to_string_lossy()),
         status = guest_quote(&run.status.to_string_lossy()),
+        stage_status = guest_quote(&stage_status.to_string_lossy()),
     );
 
     let out_harness = guest_shell(&script)
@@ -581,6 +590,24 @@ printf %s "$status" > {status}"#,
         );
     };
     let (stdout, stderr) = run.streams();
+    let stage_code = std::fs::read_to_string(&stage_status)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok());
+    let _ = std::fs::remove_file(&stage_status);
+    // THE STAGE IS PART OF THE TEST'S SETUP, so its failure is a failure
+    // of the call, named as the stage's and not as `mksquashfs`'s. Once the
+    // two shared a `|| status=$?`, where bash turns `set -e` off: a stage
+    // that stopped half way had the half it staged built and reported as
+    // 0, and the test failed later on a file that was never made (#198).
+    assert!(
+        stage_code == Some(0),
+        "the stage script of mksquashfs_from_guest_tree exited {}, so no image was \
+         built. What the guest or its disk refused is in the stage's stderr below.\n\
+         stage script:\n{stage}\nstdout:\n{}\nstderr:\n{}",
+        stage_code.map_or_else(|| "with no status".to_string(), |code| code.to_string()),
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
     println!(
         "[oracle vm] mksquashfs <staged tree> {out}{argv} -> {code}",
         out = out.display()
