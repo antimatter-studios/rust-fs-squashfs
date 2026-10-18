@@ -345,7 +345,9 @@ tasks:
       # 112 executed on 2026-09-28, after the tier grew to cover every
       # crate in the tree: the support crate's 9 tests had never run
       # anywhere (#110). Raised from 95 with that measurement.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 105'
+      # local-unit.sh measured 129 baseline cases plus five import refusal
+      # cases on 2026-10-18; every baseline case remains in the unit tier.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 134'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
@@ -417,7 +419,8 @@ tasks:
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # Xattr inspection adds one kernel case to the previous floor.
         # Bounded export adds two kernel cases; execution remains CI-only.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 301
+        # Import refusal adds five no-fixture cases to the full suite.
+        bash ../rust-fs-core/scripts/test-floor.sh vm 306
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -451,7 +454,8 @@ tasks:
       # Raised from 295 with that measurement.
       # Xattr inspection adds one kernel case to the previous floor.
       # Bounded export adds two kernel cases; execution remains CI-only.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 326'
+      # Import refusal adds five no-fixture cases to the full suite.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 331'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads
@@ -492,8 +496,8 @@ tasks:
       # 58 calls x 5, one missing-image check, three stdin checks,
       # 14 usage cases x 3, and seven help cases x 3 = 357 checks.
       # Xattr adds 39 checks and one generated-documentation check.
-      # Generated documentation checks one additional export subcommand.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 568'
+      # Generated documentation checks the export and import subcommands.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh cli 569'
 
   test:scripts:
     desc: The shell tests (tests/scripts/*.sh), every one by glob

@@ -2,7 +2,7 @@
 //! without mounting it.
 //!
 //! The verbs are the shared set every `fs.<fs>` answers: `ls`, `stat`, `read`, `export`, `xattr`,
-//! `get`/`info`, and `write`, `mkdir`, `rm`, `rmdir`, `mv`, `ln`, `truncate`,
+//! `get`/`info`, and `import`, `write`, `mkdir`, `rm`, `rmdir`, `mv`, `ln`, `truncate`,
 //! `set`, `resize`. SquashFS is a read-only format, so mutations refuse with exit status 3
 //! and "SquashFS is read-only": a script moved here from a writable
 //! filesystem fails loudly instead of meaning something else.
@@ -197,6 +197,32 @@ fn command() -> Cmd {
                      The report includes the byte count and SHA-256; DEST - writes only raw \
                      bytes to stdout. Directories, symlinks and special files are refused.",
                 ),
+        )
+        .subcommand(
+            refused_command(
+                "import",
+                "fs.squashfs rootfs.sqfs import hostname /etc/hostname\n  \
+                 fs.squashfs rootfs.sqfs import - /backup.tar < backup.tar\n  \
+                 fs.squashfs rootfs.sqfs import --replace hostname /etc/hostname",
+            )
+            .long_about(
+                "Refused: SquashFS is read-only. Import answers exit 3 before opening \
+                 the image or source file, or reading stdin.",
+            )
+            .arg(
+                Arg::new("source")
+                    .value_name("SOURCE")
+                    .required(true)
+                    .value_parser(value_parser!(OsString))
+                    .help("The local source file, or - for stdin; neither is read"),
+            )
+            .arg(mutation_path())
+            .arg(
+                Arg::new("replace")
+                    .long("replace")
+                    .action(ArgAction::SetTrue)
+                    .help("Ask to replace PATH; SquashFS still refuses import"),
+            ),
         )
         .subcommand(
             Cmd::new("xattr")
@@ -412,13 +438,13 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             &open(target, offset)?,
             sub.get_one::<String>("key").map(String::as_str),
         ),
-        // Refused before the image is opened, and `write` before stdin is
-        // read: nothing about the target can change the answer.
-        "write" | "mkdir" | "rm" | "rmdir" | "mv" | "ln" | "truncate" | "set" | "resize" => {
-            Err(CliError::refused(format!(
-                "{verb}: {READ_ONLY}; rebuild the image with mksquashfs instead"
-            )))
-        }
+        // Refused before the image or import source is opened, or stdin is
+        // read: nothing about the target can change the answer. Core 0.3.14
+        // has no shared import API, so import uses the existing refusal.
+        "import" | "write" | "mkdir" | "rm" | "rmdir" | "mv" | "ln" | "truncate" | "set"
+        | "resize" => Err(CliError::refused(format!(
+            "{verb}: {READ_ONLY}; rebuild the image with mksquashfs instead"
+        ))),
         other => unreachable!("clap knows no verb {other}"),
     }
 }
