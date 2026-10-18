@@ -334,8 +334,9 @@ probe are gone. The one exception left is named and counted in
 
 ## The pin, and the red nightly
 
-This crate pins `rust-fs-core` at `v0.2.14`, and the pin is a floor: `chore
-siblings` guarantees it and never moves a checkout backwards.
+This crate pins `rust-fs-core` at `v0.3.14` for the shared bounded single-file
+transfer, and the pin is a floor: `chore siblings` guarantees it and never
+moves a checkout backwards.
 
 It sat at `v0.2.10` for a while on purpose, because that predates a
 `CachingDevice` overflow fix and the **nightly fuzz run was red because of the
