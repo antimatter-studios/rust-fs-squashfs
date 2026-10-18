@@ -139,6 +139,10 @@ vars:
   # release-cli workflow release.yml calls (#154): the tarball's packaging
   # is core's now, and the path sibling must carry it.
   # v0.3.14 supplies the shared bounded single-file export transfer.
+  # It is also the floor for a local `chore lint`: its ci-gate.sh reads
+  # ci.yml's top-level CI_GATE_NON_GATING itself, where v0.3.13 read only
+  # the environment GitHub exports, and failed on every machine but CI's
+  # (#184). tests/scripts/ci-gate-local.sh holds it there.
   FS_CORE_REF: v0.3.14
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
