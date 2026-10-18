@@ -146,10 +146,52 @@ fn scratch_dir(tag: &str) -> std::path::PathBuf {
 
 /// An executable script at `path` that prints `line` for `--version`.
 fn impostor(path: &Path, line: &str) {
+    install_script(path, &format!("echo '{line}'"));
+}
+
+/// The same impostor, six seconds slow the first time it runs: what
+/// macOS does to every new executable while it assesses it, measured at
+/// 140-320 ms on an idle machine and longer under a loaded test run.
+/// Six seconds is past doctor's five-second `--version` budget.
+fn impostor_slow_the_first_time(path: &Path, line: &str) {
+    install_script(
+        path,
+        &format!("[ -e \"$0.ran\" ] || {{ : > \"$0.ran\"; sleep 6; }}\necho '{line}'"),
+    );
+}
+
+/// A `/bin/sh` script at `path`, executable, and already run once.
+///
+/// The first run is ours, with no deadline, so doctor's bounded
+/// `--version` probe never meets a new executable: on macOS that first
+/// run waits for the system to assess the file, and under a loaded test
+/// run the wait outlasted doctor's budget and a stale impostor was
+/// reported as foreign (#200).
+///
+/// `env` executes the script itself, as doctor does; `sh <script>` would
+/// execute only `/bin/sh` and leave the script new. Linux may refuse the
+/// run while another thread's child still holds the file open for
+/// writing (ETXTBSY), which is momentary, and `env` reports that as
+/// status 126, so that run is asked again.
+fn install_script(path: &Path, body: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut busy_left = 500;
+    let out = loop {
+        let out = std::process::Command::new("/usr/bin/env")
+            .arg(path)
+            .arg("--version")
+            .output()
+            .unwrap_or_else(|e| panic!("run {}: {e}", path.display()));
+        if out.status.code() != Some(126) || busy_left == 0 {
+            break out;
+        }
+        busy_left -= 1;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(out.status.success(), "{}: {out:?}", path.display());
 }
 
 #[test]
@@ -227,6 +269,22 @@ fn doctor_reports_a_missing_name_with_how_to_install_it() {
 fn doctor_reports_our_program_at_another_version_as_stale() {
     let old = scratch_dir("stale");
     impostor(
+        &old.join("fs.squashfs"),
+        &format!("fs.squashfs ({CRATE}) 0.0.1"),
+    );
+    let (code, json) = doctor(&[&old, names_dir()]);
+    assert_eq!(code, Some(1), "{json}");
+    assert!(json.contains("\"status\": \"stale\""), "{json}");
+    assert!(
+        json.contains(&format!("{CRATE} 0.0.1, not {VERSION}")),
+        "{json}"
+    );
+}
+
+#[test]
+fn doctor_reports_a_stale_program_whose_first_run_is_slow_as_stale() {
+    let old = scratch_dir("stale-slow");
+    impostor_slow_the_first_time(
         &old.join("fs.squashfs"),
         &format!("fs.squashfs ({CRATE}) 0.0.1"),
     );

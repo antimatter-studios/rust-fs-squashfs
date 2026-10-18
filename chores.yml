@@ -351,7 +351,9 @@ tasks:
       # anywhere (#110). Raised from 95 with that measurement.
       # local-unit.sh measured 129 baseline cases plus five import refusal
       # cases on 2026-10-18; every baseline case remains in the unit tier.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 134'
+      # local-unit.sh measured 135 on 2026-10-18 with the doctor test whose
+      # stale impostor is slow on its first run (#200).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 135'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
