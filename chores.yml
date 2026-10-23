@@ -143,7 +143,9 @@ vars:
   # ci.yml's top-level CI_GATE_NON_GATING itself, where v0.3.13 read only
   # the environment GitHub exports, and failed on every machine but CI's
   # (#184). tests/scripts/ci-gate-local.sh holds it there.
-  FS_CORE_REF: v0.3.14
+  # v0.3.15 supplies the shared tree transfer: TreeSource, TreeMetadata
+  # and export_tree, with links and times preserved (#195).
+  FS_CORE_REF: v0.3.15
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
@@ -352,8 +354,9 @@ tasks:
       # local-unit.sh measured 129 baseline cases plus five import refusal
       # cases on 2026-10-18; every baseline case remains in the unit tier.
       # local-unit.sh measured 135 on 2026-10-18 with the doctor test whose
-      # stale impostor is slow on its first run (#200).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 135'
+      # stale impostor is slow on its first run (#200). One more for the
+      # export tree options in cli_dispatch.rs (#195).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 136'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
@@ -390,7 +393,8 @@ tasks:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 250 24500 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # Xattr listing and every value add one guest-kernel case to the previous floor.
       # cli_export_kernel.rs adds two cases against Linux and unsquashfs.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 13'
+      # cli_export_tree_kernel.rs adds three, the recursive export (#195).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh kernel 16'
 
   test:vm:
     desc: 'The whole suite, compiled and run INSIDE the harness VM (how a Mac runs the Linux tests)'
@@ -426,7 +430,8 @@ tasks:
         # Xattr inspection adds one kernel case to the previous floor.
         # Bounded export adds two kernel cases; execution remains CI-only.
         # Import refusal adds five no-fixture cases to the full suite.
-        bash ../rust-fs-core/scripts/test-floor.sh vm 306
+        # Recursive export adds three kernel cases and one unit case (#195).
+        bash ../rust-fs-core/scripts/test-floor.sh vm 310
 
   test:
     desc: 'Everything, exactly as CI runs it — natively on Linux, inside the VM anywhere else'
@@ -461,7 +466,8 @@ tasks:
       # Xattr inspection adds one kernel case to the previous floor.
       # Bounded export adds two kernel cases; execution remains CI-only.
       # Import refusal adds five no-fixture cases to the full suite.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 331'
+      # Recursive export adds three kernel cases and one unit case (#195).
+      - 'bash ../rust-fs-core/scripts/test-floor.sh suite 335'
       - task: test:scripts
       # The command-line tools, built and staged from this checkout, then
       # tested as installed. A separate invocation because test:cli reads

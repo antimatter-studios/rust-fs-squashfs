@@ -334,8 +334,8 @@ probe are gone. The one exception left is named and counted in
 
 ## The pin, and the red nightly
 
-This crate pins `rust-fs-core` at `v0.3.14` for the shared bounded single-file
-transfer, and the pin is a floor: `chore siblings` guarantees it and never
+This crate pins `rust-fs-core` at `v0.3.15` for the shared bounded single-file
+and tree transfers, and the pin is a floor: `chore siblings` guarantees it and never
 moves a checkout backwards.
 
 It sat at `v0.2.10` for a while on purpose, because that predates a
