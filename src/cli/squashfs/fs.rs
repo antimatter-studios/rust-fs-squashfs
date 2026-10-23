@@ -186,16 +186,27 @@ fn command() -> Cmd {
         )
         .subcommand(
             Cmd::new("export")
-                .about("Copy a regular file out through the shared bounded transfer")
-                .args(transfer::export_args())
+                .about("Copy a regular file, or with --recursive a directory tree")
+                .args(transfer::export_args_with_times())
                 .after_help(
                     "Examples:\n  fs.squashfs rootfs.sqfs export /backup.tar backup.tar\n  \
                      fs.squashfs rootfs.sqfs export --replace /etc/hostname hostname\n  \
-                     fs.squashfs rootfs.sqfs export /backup.tar - | tar tf -\n\n\
+                     fs.squashfs rootfs.sqfs export /backup.tar - | tar tf -\n  \
+                     fs.squashfs rootfs.sqfs export --recursive /etc etc\n  \
+                     fs.squashfs rootfs.sqfs export --recursive --preserve=links,times /etc etc\n\n\
                      Files are copied in fixed chunks. A local destination is published only \
                      when complete; an existing name is refused unless --replace is given. \
                      The report includes the byte count and SHA-256; DEST - writes only raw \
-                     bytes to stdout. Directories, symlinks and special files are refused.",
+                     bytes to stdout. Without --recursive directories, symlinks and special \
+                     files are refused.\n\n\
+                     Recursive export uses the shared tree transfer and reports every item. \
+                     Existing directories are merged into; existing files require --replace. \
+                     --max-depth bounds the walk. Special files are skipped. Symlinks require \
+                     --preserve=links, which recreates their targets without following them \
+                     and copies each regular inode once. --preserve=times sets the \
+                     modification time SquashFS stores, in whole seconds; it stores no access \
+                     time, and the report says so. Symlink times are not set. --verify reads \
+                     each staged file back before publication.",
                 ),
         )
         .subcommand(
@@ -431,7 +442,26 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
         "read" => read(&open(target, offset)?, path_arg(sub), sub.get_one("output")),
         "export" => {
             let request = transfer::ExportRequest::from_matches(sub)?;
-            export(&open(target, offset)?, &request)
+            let tree = transfer::TreeOptions::from_matches(sub)?;
+            let fs = open(target, offset)?;
+            // Export reads each file once, in order: earlier decompressed
+            // data blocks are never read again.
+            fs.set_data_cache_capacity(0);
+            if tree.recursive {
+                transfer::export_tree_with_times(
+                    &request,
+                    &mut TreeExport {
+                        fs: &fs,
+                        image: std::path::Path::new(target),
+                        last: None,
+                    },
+                    tree,
+                    transfer::LinkOptions::from_matches(sub)?,
+                    transfer::TimeOptions::from_matches(sub)?,
+                )
+            } else {
+                export(&fs, &request, transfer::ExportOptions::from_matches(sub)?)
+            }
         }
         "xattr" => xattr(&open(target, offset)?, path_arg(sub), sub),
         "get" | "info" => get(
@@ -439,7 +469,7 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             sub.get_one::<String>("key").map(String::as_str),
         ),
         // Refused before the image or import source is opened, or stdin is
-        // read: nothing about the target can change the answer. Core 0.3.14
+        // read: nothing about the target can change the answer. Core 0.3.15
         // has no shared import API, so import uses the existing refusal.
         "import" | "write" | "mkdir" | "rm" | "rmdir" | "mv" | "ln" | "truncate" | "set"
         | "resize" => Err(CliError::refused(format!(
@@ -894,20 +924,157 @@ impl transfer::FileSource for ExportSource<'_> {
     }
 }
 
-fn export(fs: &Filesystem, request: &transfer::ExportRequest) -> Result<Outcome, CliError> {
+fn export(
+    fs: &Filesystem,
+    request: &transfer::ExportRequest,
+    options: transfer::ExportOptions,
+) -> Result<Outcome, CliError> {
     let path = os_bytes(&request.path);
     let inode = fs
         .lookup_path_bytes(path)
         .map_err(|e| squashfs_error(path, e))?;
     if !inode.is_regular_file() {
         return Err(CliError::failed(format!(
-            "{}: not a regular file; directories, symlinks and special files cannot be exported",
+            "{}: not a regular file; directories, symlinks and special files cannot be exported \
+             without --recursive",
             show(path)
         )));
     }
-    // Sequential export never reuses earlier decompressed data blocks.
-    fs.set_data_cache_capacity(0);
-    transfer::export(request, &mut ExportSource { fs, inode, path })
+    transfer::export_with_options(request, &mut ExportSource { fs, inode, path }, options)
+}
+
+/// SquashFS supplies lookups, listings, symlink targets and positioned
+/// reads. Core owns traversal, the depth bound, safe names, destination
+/// merging, publication and the per-item report (#195).
+struct TreeExport<'a> {
+    fs: &'a Filesystem,
+    image: &'a std::path::Path,
+    /// The file `read_file_at` read last, by path. Core reads a file in
+    /// chunks, and resolving its path again for each one would walk every
+    /// directory above it every time.
+    last: Option<(std::path::PathBuf, Vec<u8>, Inode)>,
+}
+
+impl TreeExport<'_> {
+    fn resolve(&self, path: &std::path::Path) -> Result<(Vec<u8>, Inode), CliError> {
+        let bytes = os_bytes(&path.as_os_str().to_owned()).to_vec();
+        let inode = self
+            .fs
+            .lookup_path_bytes(&bytes)
+            .map_err(|e| squashfs_error(&bytes, e))?;
+        Ok((bytes, inode))
+    }
+
+    /// What core needs of an inode. The inode number is its identity, so
+    /// the names of one hard-linked inode share it. SquashFS stores one
+    /// time, the modification time in whole seconds, and no access time:
+    /// none is invented.
+    fn metadata_for(inode: &Inode) -> transfer::TreeMetadata {
+        transfer::TreeMetadata {
+            kind: match inode.file_type() {
+                FileType::RegFile => transfer::TreeKind::File,
+                FileType::Dir => transfer::TreeKind::Directory,
+                _ => transfer::TreeKind::Other,
+            },
+            size: if inode.is_regular_file() {
+                inode.file_size
+            } else {
+                0
+            },
+            inode: u64::from(inode.inode_number),
+            accessed: None,
+            modified: std::time::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_secs(u64::from(inode.mtime))),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn os_name(name: Vec<u8>) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(name)
+}
+
+#[cfg(not(unix))]
+fn os_name(name: Vec<u8>) -> OsString {
+    OsString::from(String::from_utf8_lossy(&name).into_owned())
+}
+
+impl transfer::TreeSource for TreeExport<'_> {
+    fn image_path(&self) -> Option<&std::path::Path> {
+        Some(self.image)
+    }
+
+    fn symbolic_link(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<Option<transfer::SymbolicLink>, CliError> {
+        let (bytes, inode) = self.resolve(path)?;
+        if !inode.is_symlink() {
+            return Ok(None);
+        }
+        let target = self
+            .fs
+            .read_symlink_target(&inode)
+            .map_err(|e| squashfs_error(&bytes, e))?;
+        Ok(Some(transfer::SymbolicLink {
+            target: os_name(target).into(),
+            // SquashFS stores no directory bit for a symlink. Never resolve
+            // the target to guess one, even when it happens to exist.
+            target_is_directory: false,
+        }))
+    }
+
+    fn metadata(&mut self, path: &std::path::Path) -> Result<transfer::TreeMetadata, CliError> {
+        let (_, inode) = self.resolve(path)?;
+        Ok(Self::metadata_for(&inode))
+    }
+
+    fn read_dir(&mut self, path: &std::path::Path) -> Result<Vec<transfer::TreeEntry>, CliError> {
+        let (bytes, inode) = self.resolve(path)?;
+        // `.` and `..` are implicit in SquashFS and never listed.
+        self.fs
+            .read_dir(&inode)
+            .map_err(|e| squashfs_error(&bytes, e))?
+            .into_iter()
+            .map(|entry| {
+                let child = self.fs.read_inode(entry.inode_ref).map_err(|e| {
+                    let mut full = bytes.clone();
+                    if !full.ends_with(b"/") {
+                        full.push(b'/');
+                    }
+                    full.extend_from_slice(&entry.name);
+                    squashfs_error(&full, e)
+                })?;
+                Ok(transfer::TreeEntry {
+                    name: os_name(entry.name),
+                    metadata: Self::metadata_for(&child),
+                })
+            })
+            .collect()
+    }
+
+    fn read_file_at(
+        &mut self,
+        path: &std::path::Path,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, CliError> {
+        if !matches!(&self.last, Some((last, _, _)) if last == path) {
+            let (bytes, inode) = self.resolve(path)?;
+            if !inode.is_regular_file() {
+                return Err(CliError::failed(format!(
+                    "{}: not a regular file",
+                    show(&bytes)
+                )));
+            }
+            self.last = Some((path.to_path_buf(), bytes, inode));
+        }
+        let (_, bytes, inode) = self.last.as_ref().expect("resolved above");
+        self.fs
+            .read_file(inode, offset, buf)
+            .map_err(|e| squashfs_error(bytes, e))
+    }
 }
 
 fn xattr(fs: &Filesystem, path: &[u8], sub: &ArgMatches) -> Result<Outcome, CliError> {

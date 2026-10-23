@@ -76,6 +76,49 @@ fn every_tool_help_carries_an_example() {
     }
 }
 
+/// `export` takes the shared tree options (#195): `--recursive`, its
+/// `--max-depth` bound, `--preserve=links,times` (also given twice) and
+/// `--verify`. The parser accepts them, so a TARGET that is not an image
+/// fails at the open with status 1, never as a usage error with status 2,
+/// and nothing is written at DEST. Its help shows a recursive example.
+#[test]
+fn export_takes_the_shared_tree_options() {
+    let img = image_path("export-tree-options");
+    std::fs::write(&img, b"not an image").unwrap();
+    let dest = scratch("export-tree-options").join("dest");
+    for flags in [
+        &["--recursive"][..],
+        &["--recursive", "--max-depth", "3"],
+        &["--recursive", "--preserve=links,times"],
+        &["--recursive", "--preserve", "links", "--preserve", "times"],
+        &["--recursive", "--verify", "--replace"],
+        &["--verify"],
+    ] {
+        let out = tool("fs.squashfs")
+            .arg(&img)
+            .arg("export")
+            .args(flags)
+            .arg("/tree")
+            .arg(&dest)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{flags:?}: {}", stderr(&out));
+        assert!(out.stdout.is_empty(), "{flags:?}: {}", stdout(&out));
+        assert!(!dest.exists(), "{flags:?} wrote {}", dest.display());
+    }
+    let help = stdout(&ok(tool("fs.squashfs").args([&img, "export", "--help"])));
+    for words in [
+        "--recursive",
+        "--max-depth",
+        "--preserve",
+        "--verify",
+        "export --recursive /etc etc",
+        "export --recursive --preserve=links,times /etc etc",
+    ] {
+        assert!(help.contains(words), "export --help omits {words}:\n{help}");
+    }
+}
+
 #[test]
 fn a_wrong_command_line_is_a_structured_error_on_stderr_with_status_2() {
     let out = tool("fs.squashfs")

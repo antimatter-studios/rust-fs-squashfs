@@ -54,6 +54,8 @@ fs.squashfs rootfs.sqfs ls /etc                        # JSON entries; a symlink
 fs.squashfs rootfs.sqfs ls -R --max-depth 8 --limit 1000 /etc
 fs.squashfs rootfs.sqfs stat /etc/hostname             # one path's identity, owner, links, sizes and mtime
 fs.squashfs rootfs.sqfs read /etc/hostname > hostname  # raw bytes, or -o FILE
+fs.squashfs rootfs.sqfs export /etc/hostname hostname  # one file, published only when complete
+fs.squashfs rootfs.sqfs export --recursive --preserve=links,times /etc etc
 fs.squashfs rootfs.sqfs xattr /etc/hostname            # attribute names and byte sizes
 fs.squashfs rootfs.sqfs xattr /bin/tool security.capability -o caps.bin
 fs.squashfs rootfs.sqfs get                            # fs, label (null), sizes, and squashfs.*
@@ -91,6 +93,19 @@ even with `--text`; `-o FILE` writes through `FILE.partial` and renames on
 success. Missing paths and attributes fail with exit 1 and no stdout.
 Symlinks are inspected without following them. Setting and removing
 attributes are not supported.
+
+`export PATH DEST` copies one regular file in fixed chunks, reports its byte
+count and SHA-256, and publishes DEST only when it is complete; an existing
+DEST is refused unless `--replace` is given, and `DEST -` writes the raw bytes
+to stdout. `--verify` reads the staged copy back first. With `--recursive` a
+directory tree is copied through the shared tree transfer, every item
+reported as completed, skipped, refused or failed, and a partial tree exits 1.
+Existing directories are merged into; `--max-depth` (default 64) bounds the
+walk; special files are skipped. Symlinks need `--preserve=links`, which
+recreates their targets without following them and copies each hard-linked
+inode once. `--preserve=times` sets the modification time SquashFS stores, in
+whole seconds; it stores no access time, and the report says so. A file whose
+data cannot be read fails alone and is never published.
 
 `ls --recursive` (`-R`) adds volume-absolute `path` and relative `depth` to
 each entry. Direct children have depth 1; the starting directory is omitted,
