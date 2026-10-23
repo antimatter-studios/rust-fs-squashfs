@@ -77,6 +77,12 @@ fn every_name_has_a_man_page_in_its_section_naming_its_subcommands() {
     for option in ["recursive", "max-depth", "limit"] {
         assert!(ls.contains(option), "ls man page omits {option}");
     }
+    let export = std::fs::read_to_string(share.join("man/man1/fs.squashfs-export.1"))
+        .unwrap()
+        .replace("\\-", "-");
+    for option in ["--recursive", "--max-depth", "--preserve", "--verify"] {
+        assert!(export.contains(option), "export man page omits {option}");
+    }
     for (verb, option) in [
         ("write", "at"),
         ("mkdir", "parents"),
@@ -130,6 +136,8 @@ fn every_name_has_a_zsh_bash_and_fish_completion() {
                     "export",
                     "import",
                     "replace",
+                    "preserve",
+                    "verify",
                 ] {
                     assert!(completion.contains(option), "completion omits {option}");
                 }

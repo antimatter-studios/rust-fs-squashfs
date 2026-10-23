@@ -104,14 +104,15 @@ fn export_matches_kernel_and_unsquashfs_with_shared_publication_rules() {
             assert!(out.stdout.is_empty());
             assert!(!dest.exists());
         }
-        for args in [
-            &["export", "--replace", "/big", "-"][..],
-            &["export", "--recursive", "/dir", "tree"],
-        ] {
-            let usage = tool("fs.squashfs").arg(&image).args(args).output().unwrap();
-            assert_eq!(usage.status.code(), Some(2), "{}", stderr(&usage));
-            assert!(usage.stdout.is_empty());
-        }
+        // --replace means nothing for stdout. --recursive is a tree
+        // export, in tests/cli_export_tree_kernel.rs.
+        let usage = tool("fs.squashfs")
+            .arg(&image)
+            .args(["export", "--replace", "/big", "-"])
+            .output()
+            .unwrap();
+        assert_eq!(usage.status.code(), Some(2), "{}", stderr(&usage));
+        assert!(usage.stdout.is_empty());
         let help = stdout(&ok(tool("fs.squashfs")
             .arg(&image)
             .args(["export", "--help"])));
