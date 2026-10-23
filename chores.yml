@@ -347,7 +347,10 @@ tasks:
       # debug run is ASKED to prove it traps an overflow, and
       # tests/ci_profile.rs fails the suite if the gating workflow has no
       # such run — following `chore <task>` into this file to find it.
-      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 360 18000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      # Budget 400 lines, 20000 bytes: the tier printed 346 lines and 18103
+      # bytes on run 39935270699 (2026-10-23), once the recursive export's
+      # tests joined it (#195), past the 18000 it had.
+      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 400 20000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
       # 112 executed on 2026-09-28, after the tier grew to cover every
       # crate in the tree: the support crate's 9 tests had never run
       # anywhere (#110). Raised from 95 with that measurement.
