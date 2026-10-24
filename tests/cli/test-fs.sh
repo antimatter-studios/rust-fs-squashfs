@@ -162,7 +162,25 @@ refuse() {
 }
 refuse "read of a directory" fs.squashfs "$img" read /sub
 refuse "read of a symlink" fs.squashfs "$img" read /link
-refuse "ls of a missing path" fs.squashfs "$img" ls /missing
+
+# A path that is not there: status 1, nothing on stdout, and the shared
+# contract's `not_found` kind, which a script matches whatever the message
+# says. A missing parent is the same answer as a missing leaf.
+not_found() {
+    fs.squashfs "$img" "$@" >"$SANDBOX/nf.out" 2>"$SANDBOX/nf.err"
+    check "$* exits 1" test $? -eq 1
+    check "$* prints nothing on stdout" test ! -s "$SANDBOX/nf.out"
+    jq_check "$* reports the not_found kind" '.code == 1 and .kind == "not_found"' "$SANDBOX/nf.err"
+}
+not_found ls /missing
+not_found ls /missing/f
+not_found read /missing
+not_found read /missing/f
+not_found export /missing "$SANDBOX/exported"
+not_found export --recursive /missing "$SANDBOX/exported-tree"
+check "export of a missing path writes no destination" test ! -e "$SANDBOX/exported"
+check "export --recursive of a missing path writes no destination" test ! -e "$SANDBOX/exported-tree"
+
 refuse "a missing image" fs.squashfs "$SANDBOX/absent.sqfs" ls /
 cp "$img" "$SANDBOX/magic.sqfs"
 printf 'XXXX' | dd of="$SANDBOX/magic.sqfs" bs=1 seek=0 conv=notrunc 2>/dev/null

@@ -44,7 +44,7 @@ check "stat --offset reports the same metadata" cmp -s "$SANDBOX/file.json" "$SA
 fs.squashfs "$img" stat /missing >"$SANDBOX/m.out" 2>"$SANDBOX/m.err"
 check "stat of a missing path exits 1" test $? -eq 1
 check "stat of a missing path prints nothing on stdout" test ! -s "$SANDBOX/m.out"
-jq_check "a missing path has a structured error" '.code==1 and (.error|test("not found"))' "$SANDBOX/m.err"
+jq_check "a missing path is the not_found kind" '.code==1 and .kind=="not_found"' "$SANDBOX/m.err"
 fs.squashfs "$img" stat >"$SANDBOX/u.out" 2>"$SANDBOX/u.err"
 check "stat without a path exits 2" test $? -eq 2
 check "a usage error prints nothing on stdout" test ! -s "$SANDBOX/u.out"

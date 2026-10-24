@@ -358,8 +358,9 @@ tasks:
       # cases on 2026-10-18; every baseline case remains in the unit tier.
       # local-unit.sh measured 135 on 2026-10-18 with the doctor test whose
       # stale impostor is slow on its first run (#200). One more for the
-      # export tree options in cli_dispatch.rs (#195).
-      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 136'
+      # export tree options in cli_dispatch.rs (#195). The two not_found
+      # cases in src/cli/squashfs/fs.rs's own tests make it 138.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 138'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
