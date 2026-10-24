@@ -469,8 +469,8 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             sub.get_one::<String>("key").map(String::as_str),
         ),
         // Refused before the image or import source is opened, or stdin is
-        // read: nothing about the target can change the answer. Core 0.3.15
-        // has no shared import API, so import uses the existing refusal.
+        // read: nothing about the target can change the answer. An image is
+        // built, never edited, so import refuses as the mutations do.
         "import" | "write" | "mkdir" | "rm" | "rmdir" | "mv" | "ln" | "truncate" | "set"
         | "resize" => Err(CliError::refused(format!(
             "{verb}: {READ_ONLY}; rebuild the image with mksquashfs instead"
@@ -520,8 +520,15 @@ fn open(target: &OsString, offset: u64) -> Result<Filesystem, CliError> {
         .map_err(|e| CliError::failed(format!("{name} is not a readable SquashFS image: {e}")))
 }
 
+/// A library error about `what`. A name a path lookup does not find is
+/// the CLI contract's `not_found` kind, still exit 1, which a script
+/// matches whatever the message says; every other error is a plain failure.
 fn squashfs_error(what: &[u8], e: fs_squashfs::Error) -> CliError {
-    CliError::failed(format!("{}: {e}", show(what)))
+    let message = format!("{}: {e}", show(what));
+    match e {
+        fs_squashfs::Error::NotFound => CliError::not_found(message),
+        _ => CliError::failed(message),
+    }
 }
 
 fn type_name(t: FileType) -> &'static str {
