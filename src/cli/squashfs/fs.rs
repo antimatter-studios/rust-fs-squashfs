@@ -469,8 +469,8 @@ fn run(matches: &ArgMatches) -> Result<Outcome, CliError> {
             sub.get_one::<String>("key").map(String::as_str),
         ),
         // Refused before the image or import source is opened, or stdin is
-        // read: nothing about the target can change the answer. Core 0.3.15
-        // has no shared import API, so import uses the existing refusal.
+        // read: nothing about the target can change the answer. An image is
+        // built, never edited, so import refuses as the mutations do.
         "import" | "write" | "mkdir" | "rm" | "rmdir" | "mv" | "ln" | "truncate" | "set"
         | "resize" => Err(CliError::refused(format!(
             "{verb}: {READ_ONLY}; rebuild the image with mksquashfs instead"
@@ -520,8 +520,15 @@ fn open(target: &OsString, offset: u64) -> Result<Filesystem, CliError> {
         .map_err(|e| CliError::failed(format!("{name} is not a readable SquashFS image: {e}")))
 }
 
+/// A library error about `what`. A name a path lookup does not find is
+/// the CLI contract's `not_found` kind, still exit 1, which a script
+/// matches whatever the message says; every other error is a plain failure.
 fn squashfs_error(what: &[u8], e: fs_squashfs::Error) -> CliError {
-    CliError::failed(format!("{}: {e}", show(what)))
+    let message = format!("{}: {e}", show(what));
+    match e {
+        fs_squashfs::Error::NotFound => CliError::not_found(message),
+        _ => CliError::failed(message),
+    }
 }
 
 fn type_name(t: FileType) -> &'static str {
@@ -1202,4 +1209,37 @@ fn get(fs: &Filesystem, key: Option<&str>) -> Result<Outcome, CliError> {
     };
     let text = value.to_text();
     Ok(Outcome::report(Json::object([(key, value.clone())])).with_text(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `kind` the JSON error carries, as compact JSON.
+    fn json_kind(e: &CliError) -> Option<String> {
+        e.to_json().get("kind").map(Json::to_compact)
+    }
+
+    #[test]
+    fn a_missing_path_is_the_not_found_kind() {
+        // What a path lookup answers for a name that is not there, or for
+        // one under a parent that is not there.
+        let e = squashfs_error(b"/missing/f", fs_squashfs::Error::NotFound);
+        let json = e.to_json().to_compact();
+        assert_eq!(e.code, fs_core::cli::output::EXIT_FAILED, "{json}");
+        assert_eq!(json_kind(&e).as_deref(), Some("\"not_found\""), "{json}");
+        assert!(e.message.starts_with("/missing/f: "), "{json}");
+    }
+
+    #[test]
+    fn damage_and_a_file_on_the_path_carry_no_kind() {
+        for e in [
+            fs_squashfs::Error::NotADirectory,
+            fs_squashfs::Error::BadDirent("name past the block"),
+            fs_squashfs::Error::OutOfRange,
+        ] {
+            let e = squashfs_error(b"/f", e);
+            assert_eq!(json_kind(&e), None, "{}", e.to_json().to_compact());
+        }
+    }
 }

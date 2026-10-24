@@ -15,7 +15,7 @@ env:
   # Pinned tag of the sibling rust-fs-core repo used to satisfy the path dep
   # during local build/verify. Bump in lockstep with the rust-fs-core version
   # constraint in Cargo.toml when releasing a new fs-squashfs minor.
-  FS_CORE_REF: v0.3.15
+  FS_CORE_REF: v0.4.2
 
 jobs:
   test:
@@ -121,9 +121,9 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@48d5d0460899baa30e9c24e5cb9e5a2e15bcd675 # v0.3.15
+    uses: antimatter-studios/rust-fs-core/.github/workflows/release-cli.yml@9e841ae7ce94ed0ef9c37b9b217e03b9c978febc # v0.4.2
     with:
-      core-ref: v0.3.15
+      core-ref: v0.4.2
       toolchain: 1.95.0
 
   publish:

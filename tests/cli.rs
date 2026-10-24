@@ -54,6 +54,22 @@ fn refused(out: &Output, code: i32) -> String {
     err
 }
 
+/// A path that is not there: status 1, nothing on stdout, and the shared
+/// contract's `not_found` kind after the code, whatever the message says.
+#[track_caller]
+fn not_found(out: &Output) {
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(out));
+    assert!(out.stdout.is_empty(), "stdout: {}", stdout(out));
+    let err = stderr(out);
+    assert!(
+        err.starts_with("{\"error\": \"")
+            && err
+                .trim_end()
+                .ends_with("\"code\": 1, \"kind\": \"not_found\"}"),
+        "{err}"
+    );
+}
+
 // ---- ls ------------------------------------------------------------------
 
 #[test]
@@ -143,8 +159,7 @@ fn read_refuses_what_is_not_a_regular_file() {
     assert!(err.contains("is a directory"), "{err}");
     let err = refused(&on_fixture(&["read", "/link"]), 1);
     assert!(err.contains("is a symlink to hello.txt"), "{err}");
-    let err = refused(&on_fixture(&["read", "/no/such/file"]), 1);
-    assert!(err.contains("not found"), "{err}");
+    not_found(&on_fixture(&["read", "/no/such/file"]));
 }
 
 // ---- get / info ------------------------------------------------------------

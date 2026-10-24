@@ -60,6 +60,7 @@ for args in '--max-depth 2' '--limit 2' '-R --limit nope' '-R --max-depth -1'; d
 done
 fs.squashfs "$img" ls -R /missing >"$SANDBOX/missing.out" 2>"$SANDBOX/missing.err"
 check "missing starting path exits 1 without a report" test $? -eq 1 -a ! -s "$SANDBOX/missing.out"
+jq_check "missing starting path is the not_found kind" '.code==1 and .kind=="not_found"' "$SANDBOX/missing.err"
 { head -c 1048576 /dev/zero; cat "$img"; } >"$SANDBOX/embedded.img"
 fs.squashfs --offset 1048576 "$SANDBOX/embedded.img" ls -R / >"$SANDBOX/offset.json" 2>/dev/null
 check "recursive --offset reaches the filesystem" test $? -eq 0
