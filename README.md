@@ -5,6 +5,8 @@ driver. A clean-room SquashFS 4.0 reader over the shared
 [`rust-fs-core`](https://github.com/antimatter-studios/rust-fs-core) block-device
 trait, exposing a stable C ABI (`fs_squashfs_*`) for FFI from Swift/FSKit, C, or Go.
 
+Published on crates.io as `rust-fs-squashfs`; the library name is `fs_squashfs`.
+
 SquashFS is a compressed, read-only filesystem — a peer format to ext4/ntfs/erofs,
 not built on top of any of them. It cannot be modified in place (you regenerate the
 whole image with `mksquashfs`), so this crate has **no write path**: the C ABI is the
