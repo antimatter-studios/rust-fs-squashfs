@@ -200,7 +200,7 @@ fn recursive_export_matches_the_kernel_and_unsquashfs_and_a_damaged_file_fails_a
     // --preserve=links, and the fifo skipped.
     let out = export_tree(&image, &[], &[], &dest);
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     assert_eq!(
         json_field(&report, "completed"),
         (DEPTH * 2 + 3).to_string()
@@ -239,7 +239,7 @@ fn recursive_export_matches_the_kernel_and_unsquashfs_and_a_damaged_file_fails_a
     let kept = dest.join("big");
     std::fs::write(&kept, b"keep me").unwrap();
     let again = export_tree(&image, &[], &[], &dest);
-    assert_eq!(again.status.code(), Some(1), "{}", stderr(&again));
+    assert_eq!(again.status.code(), Some(5), "{}", stderr(&again));
     assert!(item(&stdout(&again), "/tree/big").contains("\"status\": \"refused\""));
     assert_eq!(std::fs::read(&kept).unwrap(), b"keep me");
 
@@ -293,7 +293,7 @@ fn recursive_export_matches_the_kernel_and_unsquashfs_and_a_damaged_file_fails_a
         let flags: &[&str] = if replace { &["--replace"] } else { &[] };
         let out = export_tree(&damaged, &[], flags, &partial);
         let report = stdout(&out);
-        assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
         assert_eq!(json_field(&report, "failed"), "1", "{report}");
         let failed = item(&report, "/tree/big");
         assert!(failed.contains("\"status\": \"failed\""), "{failed}");
@@ -376,7 +376,7 @@ PY
     // Without --preserve=links symlinks are refused and hard links copied.
     let plain = dir.join("plain");
     let out = export_tree(&image, &[], &[], &plain);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
     let report = stdout(&out);
     for name in ["short", "long", "raw", "sub/up"] {
         let entry = item(&report, &format!("/tree/{name}"));
@@ -501,7 +501,7 @@ fn recursive_export_bounds_merges_replaces_and_honours_the_offset() {
     let shallow = (POLICY_DEPTH - 1).to_string();
     let out = export_tree(&image, &[], &["--max-depth", &shallow], &over);
     let report = stdout(&out);
-    assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
     assert_eq!(json_field(&report, "completed"), "6", "{report}");
     assert_eq!(json_field(&report, "failed"), "1", "{report}");
     let deep = item(&report, "/tree/sub/a/b/deep");
@@ -543,7 +543,7 @@ fn recursive_export_bounds_merges_replaces_and_honours_the_offset() {
         let flags: &[&str] = if replace { &["--replace"] } else { &[] };
         let out = export_tree(&image, &[], flags, &kept);
         let report = stdout(&out);
-        assert_eq!(out.status.code(), Some(1), "{report}{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(5), "{report}{}", stderr(&out));
         let refused = if replace { "2" } else { "3" };
         assert_eq!(json_field(&report, "refused"), refused, "{report}");
         assert_eq!(json_field(&report, "failed"), "0", "{report}");
