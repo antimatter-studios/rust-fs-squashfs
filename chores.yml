@@ -145,7 +145,7 @@ vars:
   # (#184). tests/scripts/ci-gate-local.sh holds it there.
   # v0.3.15 supplies the shared tree transfer: TreeSource, TreeMetadata
   # and export_tree, with links and times preserved (#195).
-  FS_CORE_REF: v0.4.2
+  FS_CORE_REF: v0.4.3
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run gives the VM and the machine-wide slot back
@@ -359,14 +359,17 @@ tasks:
       # local-unit.sh measured 135 on 2026-10-18 with the doctor test whose
       # stale impostor is slow on its first run (#200). One more for the
       # export tree options in cli_dispatch.rs (#195). The two not_found
-      # cases in src/cli/squashfs/fs.rs's own tests make it 138.
-      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 138'
+      # cases in src/cli/squashfs/fs.rs's own tests make it 138. The shared
+      # listing's help and argument tests measured 140 on 2026-11-02.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh unit 140'
 
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
     cmds:
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:images images 260 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
-      - 'bash ../rust-fs-core/scripts/test-floor.sh images 105'
+      # Measured 131 on 2026-11-02: all 129 baseline cases and two new
+      # real-command listing tests over the committed reference image.
+      - 'bash ../rust-fs-core/scripts/test-floor.sh images 131'
 
   test:oracle:
     desc: 'squashfs-tools and this crate read each other — every tool call made inside the harness VM'

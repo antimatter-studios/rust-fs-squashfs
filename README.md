@@ -64,7 +64,7 @@ fs.squashfs --offset 1048576 firmware.bin ls /         # a filesystem embedded i
 rust-fs-squashfs doctor --text                         # is the fs.squashfs on PATH this one?
 ```
 
-A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that. `--version` prints `<tool> (rust-fs-squashfs) <version>`.
+A result is JSON on stdout (`--text` for people); a failure is `{"error": "...", "code": N}` on stderr, `N` being the exit status: 1 failed, 2 the command line was wrong, 3 the format cannot do that, 5 a tree transfer left some items out. `--version` prints `<tool> (rust-fs-squashfs) <version>`.
 
 `write PATH [--at BYTES]`, `mkdir PATH [--parents]` (`-p`), `rm PATH`,
 `rmdir PATH`, `mv SOURCE PATH`, `ln [-s|--symbolic] TARGET PATH`,
@@ -99,7 +99,7 @@ count and SHA-256, and publishes DEST only when it is complete; an existing
 DEST is refused unless `--replace` is given, and `DEST -` writes the raw bytes
 to stdout. `--verify` reads the staged copy back first. With `--recursive` a
 directory tree is copied through the shared tree transfer, every item
-reported as completed, skipped, refused or failed, and a partial tree exits 1.
+reported as completed, skipped, refused or failed, and a partial tree exits 5.
 Existing directories are merged into; `--max-depth` (default 64) bounds the
 walk; special files are skipped. Symlinks need `--preserve=links`, which
 recreates their targets without following them and copies each hard-linked
