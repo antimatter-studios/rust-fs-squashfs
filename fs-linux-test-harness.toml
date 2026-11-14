@@ -29,24 +29,3 @@ guest_command = "scripts/guest-suite.sh"
 
 [share]
 dir = ".vm-share"
-
-[vm]
-# FOUR HOURS on the deadline. The guest's own poweroff does not care what
-# is using it — a VM pulled out from under a running suite leaves every
-# call it was serving with nothing to answer — so the deadline has to
-# outlast a run rather than merely bound an idle VM. This suite is smaller
-# than ext4's, but the in-guest build is the slow part and the host may be
-# loaded.
-#
-# 12G of disk: squashfs-tools is built from source in here and the
-# in-guest suite keeps its own cargo target directory, and neither is
-# large.
-#
-# ssh_port is this repository's own — one number per consumer, so two
-# checkouts on one machine do not forward the same host port. Taken:
-# 50122, 50124, 50126, 50128 by the siblings.
-memory = "4G"
-cpus = 4
-disk = "12G"
-ssh_port = 50130
-deadline_minutes = 240

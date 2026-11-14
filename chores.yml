@@ -148,19 +148,23 @@ vars:
   FS_CORE_REF: v0.4.3
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
-  # cargo through so a run gives the VM and the machine-wide slot back
-  # however it ends; v0.2.0 answers it with "unknown command".
-  # v0.5.5 lets a host admit more than one VM (FLTH_SLOT_COUNT). v0.5.6 gives
+  # cargo through so a run ends its use of the VM however it ends; v0.2.0
+  # answers it with "unknown command".
+  # v0.5.5 lets a host admit more than one VM. v0.5.6 gives
   # back what a guest deletes and says what stopped a lost guest.
   # v0.5.8: a signal to a session stops everything its command started, within
   # five seconds, before test.sh removes the scratch directory (#216, harness
   # #117), and leaves the shares of a VM that stays up (harness #130).
   # v0.6.1: the VM-free suite runs no real `sync` on the host (harness #191), so
   # this repository's script guards over the stub engine stop flushing the
-  # machine's disks, and suites can share one guest through FLTH_SHARED_ROOT
+  # machine's disks, and suites can share one guest
   # (harness #153). A macOS host now needs vagrant-notify-forwarder-christhomas
   # 0.7.7 or newer, which `chore vm:host:check` says (harness #164).
-  LINUX_HARNESS_REF: v0.6.1
+  # v0.7.0: one shared guest per host and no machine-wide slot (harness #220,
+  # #222). A run ends its own session and leaves the guest up for the next;
+  # `vm:down` stops it when nobody is using it. A consumer's [vm] sizes are
+  # ignored: the host sets FLTH_SHARED_MEMORY/CPUS/DISK (#224).
+  LINUX_HARNESS_REF: v0.7.0
 
 # The harness's consumer tasks, as `chore vm:<task>`. OPTIONAL because the
 # harness is a sibling that `chore siblings` itself checks out: without
@@ -394,10 +398,9 @@ tasks:
     # process brings the VM up (idempotent, milliseconds when it is
     # already running) and every later call rides one shared SSH
     # connection. scripts/test.sh runs cargo inside a harness session
-    # (`vm.sh session`), so the VM comes down and the machine-wide slot is
-    # released when the tier ends, however it ends and however it was
-    # started; the `after_all` reaper is the net for a run that never
-    # reached scripts/test.sh.
+    # (`vm.sh session`), so the run's use of the shared guest ends when the
+    # tier ends, however it ends and however it was started; the
+    # `after_all` reaper is the net for a boot that never finished.
     cmds:
       - scripts/tools.sh --check
       - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 950 98000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
