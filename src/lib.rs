@@ -23,8 +23,12 @@
 //! `squashfs_fs.h` field layout. Field names mirror those structs.
 //! Independent clean-room implementation.
 //!
-//! Layout of the reader:
-//! - [`superblock`] — parse + validate the 96-byte superblock
+//! Layout of the reader, by layer (see `docs/three-layers.md`):
+//! - [`volume`] — the volume layer: an image opened on its superblock
+//!   alone, its health, and its raw bytes, however damaged the rest is
+//! - [`damage`] — damage as the primitives report it
+//! - [`superblock`] — decode the 96-byte superblock, list every fault in
+//!   it, and the strict parse built on those
 //! - [`decompress`] — codec dispatch (gzip / xz / lz4 / zstd / lzo)
 //! - [`metablock`] — 8 KiB metadata-block reader + cross-block cursor
 //! - [`table`] — indirect lookup tables (id, fragment, export)
@@ -37,6 +41,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod damage;
 pub mod decompress;
 pub mod dir;
 pub mod error;
@@ -45,18 +50,21 @@ pub mod inode;
 pub mod metablock;
 pub mod superblock;
 pub mod table;
+pub mod volume;
 pub mod xattr;
 mod xz;
 
 // C ABI exports — surface defined in `include/fs_squashfs.h`.
 pub mod capi;
 
+pub use damage::{Damage, DamageKind, Severity};
 pub use decompress::Compressor;
 pub use dir::DirEntry;
 pub use error::{Error, Result};
 pub use fs::Filesystem;
 pub use inode::{FileType, Inode};
-pub use superblock::Superblock;
+pub use superblock::{Superblock, SuperblockFault, SuperblockRule};
+pub use volume::{Volume, VolumeHealth};
 pub use xattr::XattrEntry;
 
 // DOES THIS BUILD ACTUALLY TRAP AN ARITHMETIC OVERFLOW?

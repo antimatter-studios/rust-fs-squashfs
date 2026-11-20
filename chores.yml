@@ -44,15 +44,30 @@ chore_min_version: 0.6.0
 #     images    138 l /   7,576 B    260 l / 18,000 B  the first --release tier
 #               112 tests                              in a job, so it pays the
 #                                                      cold build too
-#     oracle    792 l /  81,561 B    950 l / 98,000 B  --show-output keeps every
-#               102 tests                              tool call as evidence;
-#                                                      ~20% on the largest tier.
+#     oracle    949 l /  97,244 B  1,150 l /115,000 B  --show-output keeps every
+#               111 tests                              tool call as evidence;
+#                                                      ~18%. Measured in the
+#                                                      guest from a Mac on the
+#                                                      top of the salvage stack
+#                                                      (2026-11-20), whose
+#                                                      metatable and indirect
+#                                                      oracles add 129 l /
+#                                                      11,104 B. Was 792 l /
+#                                                      81,561 B at 102 tests.
 #                                                      Was 672 l / 63,713 B at 92
 #                                                      tests; tests/cli_fs_oracle.rs
 #                                                      added 91 l / 14,682 B of
 #                                                      them, measured on CI run
 #                                                      36614252496
-#     kernel    193 l /  18,850 B    250 l / 24,500 B  measured on merge-queue run
+#     kernel    374 l /  34,400 B    450 l / 40,000 B  measured in the guest from a
+#                24 tests                              Mac on the top of the
+#                                                      salvage stack (2026-11-20):
+#                                                      its six kernel oracles add
+#                                                      115 l / 9,948 B, and paths
+#                                                      there are longer than on
+#                                                      CI; ~16%. Was 193 l /
+#                                                      18,850 B, measured on
+#                                                      merge-queue run
 #                13 tests                              39088564228 (x86_64), the
 #                                                      top of the open chain
 #                                                      through #202: the layers
@@ -64,14 +79,27 @@ chore_min_version: 0.6.0
 #                                                      110 l / 9,861 B at 11
 #                                                      tests (run 39061629777),
 #                                                      83 l / 8,989 B fewer
-#     suite     577 l /  30,301 B    750 l / 39,400 B  measured WARM (2
+#     suite     741 l /  43,500 B    870 l / 50,000 B  619 l / 32,480 B on merge-
+#                                                      queue run 44650726479
+#                                                      (#230), plus the salvage
+#                                                      stack's 14 test files, 23
+#                                                      tests and 15 library tests:
+#                                                      122 l and ~11,000 B at the
+#                                                      ~90 B a line this tier
+#                                                      prints; ~15%. Before that,
+#                                                      577 l / 30,301 B measured WARM (2
 #               381 tests                              Compiling) on merge-queue
 #                                                      run 39094000014 (x86_64),
 #                                                      #196 on main; ~30%. Was
 #                                                      600 l / 30,000 B from
 #                                                      436 l / 22,594 B at 308
 #                                                      tests; cold was ~496 l
-#     vm        747 l /  37,605 B    920 l / 46,000 B  measured COLD in the
+#     vm        958 l /  52,500 B  1,100 l / 60,000 B  836 l / 41,527 B on merge-
+#                                                      queue run 44650726479
+#                                                      (#230), plus the same
+#                                                      122 l / ~11,000 B as the
+#                                                      suite; ~15%. Before that,
+#               747 l /  37,605 B                      measured COLD in the
 #               377 tests                              guest (61 Compiling) on
 #                                                      CI run 39061629777, plus
 #                                                      room for vagrant's boot
@@ -406,7 +434,7 @@ tasks:
     # `after_all` reaper is the net for a boot that never finished.
     cmds:
       - scripts/tools.sh --check
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 950 98000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 1150 115000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
       # 98: the 88 before, plus tests/cli_fs_oracle.rs's ten -- the tool
       # held to unsquashfs on every compressor and layout. A floor only goes up.
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 98'
@@ -420,7 +448,7 @@ tasks:
     # corruption the kernel has to refuse.
     cmds:
       - scripts/tools.sh --check
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 250 24500 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 450 40000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
       # Xattr listing and every value add one guest-kernel case to the previous floor.
       # cli_export_kernel.rs adds two cases against Linux and unsquashfs.
       # cli_export_tree_kernel.rs adds three, the recursive export (#195).
@@ -455,7 +483,7 @@ tasks:
           guest_args="$guest_args $arg"
         done
         # shellcheck disable=SC2086  # the words are the point
-        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 920 46000 -- \
+        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1100 60000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # Xattr inspection adds one kernel case to the previous floor.
         # Bounded export adds two kernel cases; execution remains CI-only.
@@ -490,7 +518,7 @@ tasks:
       - task: test:images
       - task: test:oracle
       - task: test:kernel
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 750 39400 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 870 50000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
       # Xattr inspection adds one kernel case to the previous floor.
