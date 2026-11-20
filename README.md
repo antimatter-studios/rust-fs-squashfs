@@ -38,6 +38,8 @@ checks it. Every pull request that changes behaviour updates it.
 - `metatable` — metadata blocks read one at a time, and metadata tables walked
   block by block with every damaged block reported and the framing found again
 - `table` — indirect lookup tables (id, fragment, export)
+- `data` — a file's blocks as stored and what each holds, with a sparse block (zeros
+  by the format's record) and a missing one (unknown, never zeros) kept apart
 - `records` — inodes and directory listings decoded out of a walked table, each
   lost only when its own bytes are
 - `indirect` — the same lookup tables and the xattr id table read one block at a

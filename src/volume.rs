@@ -11,10 +11,12 @@
 //! crate can write.
 
 use crate::damage::Damage;
+use crate::data::{self, BlockContent, DataContext, FileBlock};
 use crate::decompress::Compressor;
 use crate::error::{Error, Result};
 use crate::fs::Filesystem;
 use crate::indirect::{self, IndirectTable, XattrIdTable};
+use crate::inode::Inode;
 use crate::metatable::{walk_table, TableWalk};
 use crate::superblock::{Superblock, SuperblockFault, SUPERBLOCK_SIZE};
 use fs_core::BlockRead;
@@ -159,6 +161,28 @@ impl Volume {
     /// has no attributes.
     pub fn xattr_id_table(&self) -> Option<XattrIdTable> {
         indirect::xattr_id_table(&*self.dev, &self.sb)
+    }
+
+    /// A regular file's blocks, laid out from its inode alone.
+    pub fn file_blocks(&self, inode: &Inode) -> Vec<FileBlock> {
+        data::file_map(inode, self.sb.block_size)
+    }
+
+    /// Read one block of a file, with `fragments` for its tail, and say
+    /// what it holds: its bytes, zeros the format records, or why its
+    /// bytes are unknown.
+    pub fn read_file_block(&self, fragments: &IndirectTable, block: &FileBlock) -> BlockContent {
+        let lookup = |i: u32| indirect::fragment_entry(fragments, u64::from(i));
+        data::read_file_block(
+            &DataContext {
+                dev: &*self.dev,
+                comp: self.compressor(),
+                block_size: self.sb.block_size,
+                bytes_used: self.sb.bytes_used.min(self.device_size),
+                fragment: &lookup,
+            },
+            block,
+        )
     }
 
     /// Read source bytes as they are stored, needing no valid structure.
