@@ -365,7 +365,7 @@ probe are gone. The one exception left is named and counted in
 
 ## The pin, and the red nightly
 
-This crate pins `rust-fs-core` at `v0.5.0` for the three shared driver layers
+This crate pins `rust-fs-core` at `v0.5.1` for the three shared driver layers
 (`fs_core::layers`, with the `layers` feature), and before that for the shared recursive-listing
 arguments, bounds and errors, bounded single-file and tree transfers, and
 `CliError::not_found`, and the pin is a floor: `chore siblings` guarantees it and never

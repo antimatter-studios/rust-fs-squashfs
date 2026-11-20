@@ -13,14 +13,12 @@
 //! A fragment tail is a window of a decoded fragment block that several
 //! files share: `Encoding { decoded, offset, length }` says which bytes.
 //!
-//! One place SquashFS does not fit the shared contract, reported on
-//! rust-fs-core#453 and open in v0.5.0, is candidate identity. An inode is a
-//! record inside a compressed metadata block; its bytes as stored are the
-//! whole block, which many inodes share. A candidate's `location` is that
-//! block's stored extent, and its inode reference -- the block and the
-//! offset in the decoded block -- is in [`SquashfsDetail`]. Candidates in
-//! one block share a `location.offset`, which the contract uses as
-//! identity.
+//! An inode is a record inside a compressed metadata block, and its bytes as
+//! stored are the whole block, which many inodes share. A candidate's
+//! `location` is that block's stored extent. Its identity is its inode
+//! reference -- the block and the offset in the decoded block, in
+//! [`SquashfsDetail`] -- which [`SquashfsAdapter`] returns from
+//! `SalvageAdapter::candidate_id`.
 
 use crate::damage::{Damage as OurDamage, DamageKind as OurKind, Severity as OurSeverity};
 use crate::data::{BlockSource, FileBlock};
@@ -46,7 +44,7 @@ use fs_core::layers::volume::{
 };
 use fs_core::BlockRead;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -628,6 +626,10 @@ impl SalvageAdapter for SquashfsAdapter {
         capabilities()
     }
 
+    fn candidate_id(&self, candidate: &Candidate<SquashfsDetail>) -> u64 {
+        candidate.detail.inode_ref
+    }
+
     fn find_candidates(
         &self,
         source: &dyn BlockRead,
@@ -667,12 +669,22 @@ impl SalvageAdapter for SquashfsAdapter {
             .into_iter()
             .filter(|c| inside(c.location.offset))
             .collect();
-        for candidate in candidates.iter() {
+        for (i, candidate) in candidates.iter().enumerate() {
             report.candidates += 1;
             if let ControlFlow::Break(()) = sink.accept(candidate.clone()) {
-                // The first byte not yet scanned: past this candidate's
-                // block, because a block's records are decoded together.
-                report.stopped_at = candidate.location.end();
+                // The first byte not yet scanned. When more of this block's
+                // records follow, that is the block's first byte, and a scan
+                // resumed there delivers them again with the ones already
+                // delivered, which `candidate_id` tells apart. Otherwise it
+                // is past the block.
+                let more_in_block = candidates
+                    .get(i + 1)
+                    .is_some_and(|n| n.location.offset == candidate.location.offset);
+                report.stopped_at = if more_in_block {
+                    Some(candidate.location.offset)
+                } else {
+                    candidate.location.end()
+                };
                 break;
             }
         }
@@ -779,14 +791,11 @@ impl SalvageAdapter for SquashfsAdapter {
             .filter_map(|c| self.ours(&salvage, &c.detail))
             .collect();
         let tree = salvage.rebuild_tree(&ours);
-        let location: BTreeMap<u64, u64> = candidates
-            .iter()
-            .map(|c| (c.detail.inode_ref, c.location.offset))
-            .collect();
+        let known: BTreeSet<u64> = candidates.iter().map(|c| c.detail.inode_ref).collect();
         let nodes = candidates
             .iter()
             .map(|c| TreeNode {
-                candidate: c.location.offset,
+                candidate: c.detail.inode_ref,
                 parents: tree
                     .nodes
                     .get(&c.detail.inode_ref)
@@ -797,7 +806,7 @@ impl SalvageAdapter for SquashfsAdapter {
                                 let parent = match claim.parent {
                                     salvage::Parent::Root => Parent::Root,
                                     salvage::Parent::Candidate(r) => {
-                                        Parent::Candidate(*location.get(&r)?)
+                                        Parent::Candidate(*known.get(&r)?)
                                     }
                                     salvage::Parent::Lost(_) => return None,
                                 };

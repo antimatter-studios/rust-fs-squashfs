@@ -132,38 +132,12 @@ impl Driver for Squashfs {
     }
 }
 
-/// The violations that come from one misfit, filed with its evidence on
-/// rust-fs-core#453 and still open in v0.5.0: a SquashFS inode is a record
-/// inside a compressed metadata block, so the candidates in one block share
-/// the stored extent the contract uses as their identity. A scan of that
-/// extent finds the block's first inode, and a scan stopped part way
-/// through a block can only resume after it. The format is right and the
-/// contract has no field for it; no byte offset would be the record's own.
-fn is_identity_misfit(detail: &str) -> bool {
-    detail.starts_with("candidates share the location offsets that identify them")
-        || (detail.starts_with("a scan of the record at")
-            && detail.contains("did not find its candidate again"))
-        || (detail.starts_with("resuming at byte")
-            && detail.contains("found other candidates than the whole scan"))
-}
-
 #[test]
-fn the_salvage_set_finds_nothing_but_the_identity_misfit() {
-    let report = salvage_set::run(&Squashfs);
-    let (misfit, other): (Vec<_>, Vec<_>) = report
-        .violations()
-        .iter()
-        .partition(|v| is_identity_misfit(&v.detail));
-    assert!(
-        other.is_empty(),
-        "violations other than the identity misfit: {other:#?}"
-    );
-    // When rust-fs-core settles the identity of records inside compressed
-    // containers, this fails: drop the filter and assert conformance.
-    assert!(
-        !misfit.is_empty(),
-        "the identity misfit is gone: assert `report.assert_conforms()` instead"
-    );
+fn the_salvage_set_conforms() {
+    // Inodes in one compressed metadata block share its stored extent, so
+    // the adapter identifies a candidate by its inode reference
+    // (`candidate_id`, rust-fs-core 0.5.1).
+    salvage_set::run(&Squashfs).assert_conforms();
 }
 
 #[test]
