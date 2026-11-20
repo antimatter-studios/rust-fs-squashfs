@@ -163,19 +163,20 @@ fs-linux-test-harness guest, as the rest of the suite is.
 
 ## Order of work
 
-Small pull requests, each on top of the last:
+Small pull requests, each on top of the last, each checked against the kernel
+or `unsquashfs` on images `mksquashfs` made, intact and damaged:
 
-1. rust-fs-core pinned by version, with a local `[patch]` for a checkout.
-2. This page.
-3. The raw superblock and the volume handle that opens without a strict
-   parse.
-4. Metadata blocks and tables read one block at a time, with per-block damage
-   and resynchronisation.
-5. Indirect tables read entry block by entry block.
-6. Inode and directory decoding that keeps what precedes a fault.
-7. Data blocks and fragments, with sparse and missing kept apart.
-8. The salvage verbs over those primitives.
-9. Oracle tests over damaged images.
+| Step | Pull request | Oracle |
+|---|---|---|
+| rust-fs-core pinned by version, a local `[patch]` for a checkout | #230 | |
+| This page | #231 | |
+| The volume layer and the superblock's faults | #233 | the kernel refuses every superblock fault reported |
+| Metadata tables walked block by block | #234 | every reference `mksquashfs` wrote names a block found; `unsquashfs` refuses a reported block |
+| Lookup tables read block by block | #235 | `unsquashfs` extracts through the entries; a damaged block loses only its own |
+| Inodes and listings decoded past damage | #236 | the kernel stats exactly the paths whose inodes decode |
+| Data blocks and fragments, sparse and missing apart | #237 | the kernel reads, zero-fills or fails exactly the same blocks |
+| Candidates and the rebuilt tree | #238 | every file the kernel reaches is found, and the files it cannot |
+| Extents, the damage audit, materialize | #239 | materialized files hold exactly the kernel's bytes |
 
 Then, once rust-fs-core releases the shared traits, each layer implements its
 trait, and the current API stays one release as a deprecated wrapper.
