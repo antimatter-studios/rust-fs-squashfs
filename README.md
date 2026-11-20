@@ -29,6 +29,9 @@ checks it. Every pull request that changes behaviour updates it.
 - `salvage` — the recovery verbs in SquashFS terms: candidates found three ways,
   the tree rebuilt from every parent claim, and the capabilities a read-only
   format lacks
+- `salvage_read` — the salvage verbs that read: a file's stored extents, every
+  damage observed, raw extents, and a file materialized with the source of
+  every range, missing ranges never passed off as the file's
 - `damage` — damage as the primitives report it (kind, severity, byte range)
 - `superblock` — decode the 96-byte superblock, every fault in it at its bytes,
   and the strict parse + validate built on those
