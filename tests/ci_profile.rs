@@ -2886,7 +2886,16 @@ fn am_fs_core_versions_declared(text: &str) -> Vec<(String, String)> {
         }
         if line.contains("rust-fs-core") {
             if let Some(v) = quoted_value_after(line, "version") {
+                let v = v.trim_start_matches('=').to_string();
                 found.push(("the rust-fs-core dependency's `version`".to_string(), v));
+            }
+        }
+        // `rust-fs-core = "=X.Y.Z"`: the dependency as a bare version.
+        if line.starts_with("rust-fs-core") {
+            if let Some(v) = quoted_value_after(line, "rust-fs-core") {
+                if let Some(v) = as_version(v.trim_start_matches('=')) {
+                    found.push(("the rust-fs-core dependency".to_string(), v));
+                }
             }
         }
         if let Some(rest) = line.split_once("FS_CORE_REF:") {
@@ -3018,6 +3027,19 @@ mod core_pin_parser {
                 "0.2.13".to_string()
             )],
         );
+    }
+
+    /// The exact registry spelling, bare and in a table.
+    #[test]
+    fn an_exact_registry_version_declares_its_version() {
+        for toml in [
+            "rust-fs-core = \"=0.4.3\"\n",
+            "rust-fs-core = { version = \"=0.4.3\", features = [\"cli\"] }\n",
+        ] {
+            let found = am_fs_core_versions_declared(toml);
+            assert_eq!(found.len(), 1, "{toml}: {found:?}");
+            assert_eq!(found[0].1, "0.4.3", "{toml}");
+        }
     }
 
     /// The workflow spelling, with and without the `v`.
@@ -3633,5 +3655,59 @@ fn the_chore_download_retries_a_transient_server_error() {
         bare.is_empty(),
         "these chore downloads fail the job on one transient HTTP 5xx; \
          add `--retry 5 --retry-all-errors --retry-delay 2`: {bare:#?}"
+    );
+}
+
+/// The `rust-fs-core` the crate links is one exact release from crates.io,
+/// never a path or a git checkout.
+///
+/// A path dependency built whatever was checked out beside the
+/// repository, so two machines with the same commit could link two
+/// different cores, and nothing in the tree recorded which. An exact
+/// registry version (`=X.Y.Z`, not `^X.Y.Z`) names one crate everywhere,
+/// and both lockfiles must resolve it from crates.io. A local checkout is
+/// used through an untracked `.cargo/config.toml` `[patch.crates-io]`,
+/// which `.gitignore` keeps out of the tree.
+#[test]
+fn rust_fs_core_is_an_exact_crates_io_version_with_a_local_patch_kept_out_of_git() {
+    let root = manifest_dir();
+    for manifest in ["Cargo.toml", "fuzz/Cargo.toml"] {
+        let text = read_or_panic(&root.join(manifest));
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("rust-fs-core"))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "{manifest}: expected one rust-fs-core dependency line, found {lines:?}"
+        );
+        let line = lines[0];
+        assert!(
+            !line.contains("path") && !line.contains("git"),
+            "{manifest}: rust-fs-core is pinned by path or git ({line}); pin it by version only"
+        );
+        let spec = quoted_value_after(line, "rust-fs-core").unwrap_or_default();
+        assert!(
+            spec.starts_with('=') && as_version(&spec[1..]).is_some(),
+            "{manifest}: rust-fs-core is {spec:?}, not an exact `=X.Y.Z`"
+        );
+    }
+    for lock in ["Cargo.lock", "fuzz/Cargo.lock"] {
+        let text = read_or_panic(&root.join(lock));
+        let package = text
+            .split("[[package]]")
+            .find(|p| p.contains("name = \"rust-fs-core\""))
+            .unwrap_or_else(|| panic!("{lock}: no rust-fs-core package"));
+        assert!(
+            package.contains("source = \"registry+https://github.com/rust-lang/crates.io-index\""),
+            "{lock}: rust-fs-core does not resolve from crates.io:{package}"
+        );
+    }
+    let ignore = read_or_panic(&root.join(".gitignore"));
+    assert!(
+        ignore.lines().any(|l| l.trim() == "/.cargo/config.toml"),
+        ".gitignore must keep a local `.cargo/config.toml` [patch] out of the tree"
     );
 }

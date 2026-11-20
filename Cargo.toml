@@ -56,11 +56,22 @@ cli = ["dep:clap", "rust-fs-core/cli"]
 
 [dependencies]
 # Block-device trait surface shared with the sister crates (qcow2 reader,
-# partition probe, fs-ext4 / fs-ntfs drivers). Local path dep until the
-# crates publish; the FFI mount path consumes `fs_core::ffi::FsCoreDevice`
-# so an FSKit extension (or any FFI consumer) can hand us a block-device
-# resource.
-rust-fs-core = { path = "../rust-fs-core", version = "0.4.3" }
+# partition probe, fs-ext4 / fs-ntfs drivers); the FFI mount path consumes
+# `fs_core::ffi::FsCoreDevice` so an FSKit extension (or any FFI consumer)
+# can hand us a block-device resource.
+#
+# PINNED BY VERSION, NEVER BY PATH. An exact version from crates.io is the
+# same crate on every machine and in CI, where a path dependency was
+# whatever happened to be checked out beside the repository. To build
+# against a local rust-fs-core, override it in your own, untracked
+# `.cargo/config.toml` (ignored by .gitignore):
+#
+#     [patch.crates-io]
+#     rust-fs-core = { path = "../rust-fs-core" }
+#
+# The exact version agrees with FS_CORE_REF in chores.yml and release.yml,
+# and with fuzz/Cargo.toml and fuzz.yml; tests/ci_profile.rs fails if not.
+rust-fs-core = "=0.4.3"
 # LZO1X codec (compression id 3). Extracted from this crate into its own
 # published crate so the Btrfs driver can share it rather than each
 # carrying a copy — the decoder is identical and the format is not

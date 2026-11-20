@@ -12,9 +12,9 @@ env:
   CARGO_TERM_COLOR: always
   # scripts/ci-install-chore.sh refuses to run without it; ci.yml pins the same.
   CHORE_VERSION: "0.11.0"
-  # Pinned tag of the sibling rust-fs-core repo used to satisfy the path dep
-  # during local build/verify. Bump in lockstep with the rust-fs-core version
-  # constraint in Cargo.toml when releasing a new fs-squashfs minor.
+  # Pinned tag of the sibling rust-fs-core checkout, which supplies the
+  # shared scripts. It names the same release as the exact rust-fs-core
+  # version in Cargo.toml; tests/ci_profile.rs fails if not.
   FS_CORE_REF: v0.4.3
 
 jobs:
@@ -24,9 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The crate has a path dep on rust-fs-core (../rust-fs-core). Clone the
-      # sibling repo alongside, pinned to FS_CORE_REF, so cargo resolves it.
-      # Anonymous HTTPS clone — rust-fs-core is public.
+      # rust-fs-core's shared scripts come from a sibling checkout
+      # (../rust-fs-core) at FS_CORE_REF; the crate itself comes from
+      # crates.io at the exact version in Cargo.toml.
       - name: Install chore
         run: scripts/ci-install-chore.sh
 
@@ -199,12 +199,9 @@ jobs:
         if: steps.already.outputs.published == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        # No `--locked`: publish must rewrite the `rust-fs-core` path
-        # dependency into its registry equivalent in the packaged lockfile,
-        # which `--locked` forbids ("cannot update the lock file"). The
-        # verify-build resolves rust-fs-core from crates.io via the `version`
-        # constraint, so the published artifact is pinned by that
-        # constraint, not by the local path checkout.
+        # rust-fs-core is an exact registry version in Cargo.toml, so the
+        # published crate and its verify-build resolve the same release
+        # this tree was built and tested against.
         run: cargo publish
 
       # Nothing is attested on trust: the file is compared with the
