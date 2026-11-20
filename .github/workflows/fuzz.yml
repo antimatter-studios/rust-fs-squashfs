@@ -51,8 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The fuzz crate depends on the same sibling the parent crate
-      # does, by path, so both tiers build against one copy of it.
+      # The fuzz crate takes rust-fs-core from crates.io at the same
+      # exact version as the parent crate; the sibling checkout supplies
+      # the shared scripts, at that same release.
       - name: Clone sibling rust-fs-core
         run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
 

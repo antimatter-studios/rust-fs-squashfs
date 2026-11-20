@@ -55,3 +55,8 @@ tests/fixtures/*.sqfs
 # The harness's shared directory (fs-linux-test-harness.toml's [share]):
 # what a run hands across to the guest and back.
 /.vm-share/
+
+# A local `[patch.crates-io]` that builds against a rust-fs-core checkout
+# instead of the pinned release (see the rust-fs-core entry in Cargo.toml).
+# It is one machine's choice, so it is never committed.
+/.cargo/config.toml

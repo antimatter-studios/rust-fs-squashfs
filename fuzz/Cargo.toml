@@ -20,7 +20,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 rust-fs-squashfs = { path = ".." }
-rust-fs-core = { path = "../../rust-fs-core", version = "0.4.3" }
+# The same exact version as ../Cargo.toml (tests/ci_profile.rs).
+rust-fs-core = "=0.4.3"
 
 [[bin]]
 name = "image"

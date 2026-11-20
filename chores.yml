@@ -282,8 +282,9 @@ tasks:
       - 'src/**/*.rs'
       - 'include/*.h'
       # fs_core.h is a source of ours because we ship it (see the cp below).
-      # THIS PATH AND THE cp MUST AGREE, and nothing checks that they do —
-      # it is the same path Cargo.toml resolves rust-fs-core from.
+      # THIS PATH AND THE cp MUST AGREE, and nothing checks that they do.
+      # The checkout is at FS_CORE_REF, the same release as the exact
+      # version Cargo.toml links (tests/ci_profile.rs).
       - '../rust-fs-core/include/fs_core.h'
 
     # Templated, which is fine here where it is not fine above: the check

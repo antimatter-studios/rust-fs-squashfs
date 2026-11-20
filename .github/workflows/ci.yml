@@ -156,7 +156,7 @@ jobs:
         # through it.
         run: scripts/ci-install-chore.sh
       - name: chore siblings
-        # rust-fs-core (the path dependency) and fs-linux-test-harness, at
+        # rust-fs-core (the shared scripts) and fs-linux-test-harness, at
         # the refs pinned in chores.yml.
         run: chore siblings
       - name: Install Rust
@@ -448,7 +448,7 @@ jobs:
       - name: Install chore
         run: scripts/ci-install-chore.sh
       - name: chore siblings
-        # rust-fs-core, the path dependency the current tree builds against.
+        # rust-fs-core, for the shared semver-check script.
         run: chore siblings
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
