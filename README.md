@@ -24,7 +24,11 @@ checks it. Every pull request that changes behaviour updates it.
 
 ## Crate layout
 
-- `superblock` — 96-byte superblock parse + validate
+- `volume` — the volume layer: an image opened on its superblock alone, its
+  health and its raw bytes, however damaged the rest is
+- `damage` — damage as the primitives report it (kind, severity, byte range)
+- `superblock` — decode the 96-byte superblock, every fault in it at its bytes,
+  and the strict parse + validate built on those
 - `decompress` — codec dispatch (gzip / xz / lz4 / zstd / lzo, plus legacy lzma
   best-effort, all pure-Rust). LZO1X is decoded by the separate
   [`rust-lzo1x`](https://crates.io/crates/rust-lzo1x) crate, a clean-room decoder
