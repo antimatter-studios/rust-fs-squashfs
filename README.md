@@ -35,6 +35,8 @@ checks it. Every pull request that changes behaviour updates it.
   with no liblzo2-derived code
 - `metablock` — 8 KiB metadata-block reader + cross-block cursor, and the
   decompressed-metadata cache
+- `metatable` — metadata blocks read one at a time, and metadata tables walked
+  block by block with every damaged block reported and the framing found again
 - `table` — indirect lookup tables (id, fragment, export)
 - `inode` — all SquashFS inode shapes
 - `dir` — directory-listing parser

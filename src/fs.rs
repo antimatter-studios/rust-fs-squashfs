@@ -159,7 +159,7 @@ impl LogicalBlock {
 /// that table really begins; the nearest of those, and of the superblock
 /// bound, is the end. A pointer that cannot be read, or that is not past
 /// the directory table's start, is not used.
-fn directory_table_end<R: BlockRead + ?Sized>(dev: &R, sb: &Superblock) -> u64 {
+pub(crate) fn directory_table_end<R: BlockRead + ?Sized>(dev: &R, sb: &Superblock) -> u64 {
     let tables = [
         (sb.fragment_table_start, sb.fragment_entry_count > 0),
         (sb.export_table_start, true),

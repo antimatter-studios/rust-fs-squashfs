@@ -15,21 +15,12 @@
 //! [`MetaCache`] holds the *decompressed* result of that work, so the
 //! second read of a block skips the codec as well as the device.
 
-use crate::decompress;
 use crate::error::{Error, Result};
-use crate::superblock::{Superblock, METADATA_SIZE};
+use crate::superblock::Superblock;
 use fs_core::BlockRead;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-
-/// Set means the block is stored UNCOMPRESSED.
-///
-/// The polarity is the format's, not a choice made here, and it is the
-/// opposite of what the obvious name would suggest — which is why the
-/// name says what the bit means rather than what it is about.
-const UNCOMPRESSED_BIT: u16 = 0x8000;
-const SIZE_MASK: u16 = 0x7FFF;
 
 /// One decompressed metadata block, plus where the next one starts.
 ///
@@ -153,10 +144,7 @@ pub fn read_block<R: BlockRead + ?Sized>(
         return Ok((hit.bytes, hit.next_abs));
     }
     let (bytes, next_abs) = read_block_uncached(dev, sb, abs)?;
-    let block = CachedBlock {
-        bytes: Arc::new(bytes),
-        next_abs,
-    };
+    let block = CachedBlock { bytes, next_abs };
     if let Some(cache) = cache {
         cache.insert(abs, block.clone());
     }
@@ -164,34 +152,20 @@ pub fn read_block<R: BlockRead + ?Sized>(
 }
 
 /// The decompression itself, with no cache in front of it.
+///
+/// The strict reading of [`crate::metatable::read_metablock`]: the same
+/// block, refused on the first thing wrong with it.
 fn read_block_uncached<R: BlockRead + ?Sized>(
     dev: &R,
     sb: &Superblock,
     abs: u64,
-) -> Result<(Vec<u8>, u64)> {
-    let mut hdr = [0u8; 2];
-    dev.read_at(abs, &mut hdr)?;
-    let raw = u16::from_le_bytes(hdr);
-    let on_disk = (raw & SIZE_MASK) as usize;
-    let is_compressed = raw & UNCOMPRESSED_BIT == 0;
-    if on_disk == 0 || on_disk > METADATA_SIZE {
-        return Err(Error::BadMetadata("metadata block size out of range"));
+) -> Result<(Arc<Vec<u8>>, u64)> {
+    let block = crate::metatable::read_metablock(dev, sb.compressor().ok(), abs);
+    if matches!(block.state, crate::metatable::MetablockState::NoCompressor) {
+        // The superblock's own refusal, as before: the id names no codec.
+        sb.compressor()?;
     }
-
-    let mut payload = vec![0u8; on_disk];
-    dev.read_at(abs + 2, &mut payload)?;
-
-    let out = if is_compressed {
-        decompress::decompress(sb.compressor()?, &payload, METADATA_SIZE)?
-    } else {
-        // Uncompressed metadata blocks are stored verbatim, still capped
-        // at the 8 KiB metadata size.
-        if payload.len() > METADATA_SIZE {
-            return Err(Error::BadMetadata("uncompressed metadata block too large"));
-        }
-        payload
-    };
-    Ok((out, abs + 2 + on_disk as u64))
+    block.into_result()
 }
 
 /// A flat reader over a run of consecutive metadata blocks, starting at a
@@ -412,6 +386,7 @@ impl<'a, R: BlockRead + ?Sized> MetaCursor<'a, R> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::metatable::UNCOMPRESSED_BIT;
     use crate::superblock::tests::synth_sb;
     use crate::superblock::Superblock;
     use flate2::{Compress, Compression, FlushCompress};
