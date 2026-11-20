@@ -135,6 +135,10 @@ let mut buf = vec![0u8; inode.file_size as usize];
 fs.read_file(&inode, 0, &mut buf)?;
 ```
 
+The crate is organised as three layers -- the volume, the on-disk primitives
+with the salvage verbs over them, and the file API above -- mapped out with
+what remains to be built in [docs/three-layers.md](docs/three-layers.md).
+
 ## Tests
 
 ```sh
