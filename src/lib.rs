@@ -29,6 +29,8 @@
 //! - [`damage`] — damage as the primitives report it
 //! - [`superblock`] — decode the 96-byte superblock, list every fault in
 //!   it, and the strict parse built on those
+//! - [`metatable`] — metadata blocks read one at a time and tables walked
+//!   block by block, each damaged block reported, framing found again
 //! - [`decompress`] — codec dispatch (gzip / xz / lz4 / zstd / lzo)
 //! - [`metablock`] — 8 KiB metadata-block reader + cross-block cursor
 //! - [`table`] — indirect lookup tables (id, fragment, export)
@@ -48,6 +50,7 @@ pub mod error;
 pub mod fs;
 pub mod inode;
 pub mod metablock;
+pub mod metatable;
 pub mod superblock;
 pub mod table;
 pub mod volume;

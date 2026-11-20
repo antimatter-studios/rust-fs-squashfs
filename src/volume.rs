@@ -14,6 +14,7 @@ use crate::damage::Damage;
 use crate::decompress::Compressor;
 use crate::error::{Error, Result};
 use crate::fs::Filesystem;
+use crate::metatable::{walk_table, TableWalk};
 use crate::superblock::{Superblock, SuperblockFault, SUPERBLOCK_SIZE};
 use fs_core::BlockRead;
 use std::sync::Arc;
@@ -105,6 +106,36 @@ impl Volume {
     /// that is healthy enough to read files from.
     pub fn filesystem(&self) -> Result<Filesystem> {
         Filesystem::open(self.dev.clone())
+    }
+
+    /// The inode table, framed block by block with every damaged block
+    /// reported: `[inode_table_start, directory_table_start)`.
+    ///
+    /// Decodes every block in the table, so it costs a pass over all the
+    /// inode metadata. The bounds are the superblock's as they stand; a
+    /// damaged one makes a walk of the wrong bytes, which the walk then
+    /// reports as damage rather than as inodes.
+    pub fn inode_table(&self) -> TableWalk {
+        walk_table(
+            &*self.dev,
+            self.compressor(),
+            self.sb.inode_table_start,
+            self.sb.directory_table_start,
+            "inode table",
+        )
+    }
+
+    /// The directory table, framed block by block with every damaged block
+    /// reported: from `directory_table_start` to where the first table
+    /// after it begins.
+    pub fn directory_table(&self) -> TableWalk {
+        walk_table(
+            &*self.dev,
+            self.compressor(),
+            self.sb.directory_table_start,
+            crate::fs::directory_table_end(&*self.dev, &self.sb),
+            "directory table",
+        )
     }
 
     /// Read source bytes as they are stored, needing no valid structure.
