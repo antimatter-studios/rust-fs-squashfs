@@ -46,9 +46,15 @@ chore_min_version: 0.6.0
 #     images    138 l /   7,576 B    260 l / 18,000 B  the first --release tier
 #               112 tests                              in a job, so it pays the
 #                                                      cold build too
-#     oracle    949 l /  97,244 B  1,150 l /115,000 B  --show-output keeps every
+#     oracle    939 l /  92,793 B  1,150 l /115,000 B  --show-output keeps every
 #               111 tests                              tool call as evidence;
-#                                                      ~18%. Measured in the
+#                                                      measured on CI run
+#                                                      44658546908 (x86_64), the
+#                                                      top of the salvage stack
+#                                                      (#241), which passed every
+#                                                      tier; ~22%. In the
+#                                                      guest from a Mac it was
+#                                                      949 l / 97,244 B. In the
 #                                                      guest from a Mac on the
 #                                                      top of the salvage stack
 #                                                      (2026-11-20), whose
@@ -61,8 +67,13 @@ chore_min_version: 0.6.0
 #                                                      added 91 l / 14,682 B of
 #                                                      them, measured on CI run
 #                                                      36614252496
-#     kernel    374 l /  34,400 B    450 l / 40,000 B  measured in the guest from a
-#                24 tests                              Mac on the top of the
+#     kernel    341 l /  32,183 B    450 l / 40,000 B  measured on CI run 44658546908
+#                24 tests                              (x86_64, #241), which passed
+#                                                      every tier; the shared-layer
+#                                                      test (#242) adds one case of
+#                                                      ten guest calls; ~25%. In
+#                                                      the guest from a Mac on the
+#                                                      top of the
 #                                                      salvage stack (2026-11-20):
 #                                                      its six kernel oracles add
 #                                                      115 l / 9,948 B, and paths
@@ -81,14 +92,14 @@ chore_min_version: 0.6.0
 #                                                      110 l / 9,861 B at 11
 #                                                      tests (run 39061629777),
 #                                                      83 l / 8,989 B fewer
-#     suite     741 l /  43,500 B    870 l / 50,000 B  619 l / 32,480 B on merge-
-#                                                      queue run 44650726479
-#                                                      (#230), plus the salvage
-#                                                      stack's 14 test files, 23
-#                                                      tests and 15 library tests:
-#                                                      122 l and ~11,000 B at the
-#                                                      ~90 B a line this tier
-#                                                      prints; ~15%. Before that,
+#     suite     741 l /  38,378 B    850 l / 45,000 B  measured on CI run 44658546908
+#               438 tests                              (x86_64, #241), which passed
+#                                                      every tier; the shared-layer
+#                                                      tests (#242) add two files
+#                                                      and four cases, ~16 l;
+#                                                      ~13%. 619 l / 32,480 B on
+#                                                      merge-queue run 44650726479
+#                                                      (#230). Before that,
 #                                                      577 l / 30,301 B measured WARM (2
 #               381 tests                              Compiling) on merge-queue
 #                                                      run 39094000014 (x86_64),
@@ -96,11 +107,15 @@ chore_min_version: 0.6.0
 #                                                      600 l / 30,000 B from
 #                                                      436 l / 22,594 B at 308
 #                                                      tests; cold was ~496 l
-#     vm        958 l /  52,500 B  1,100 l / 60,000 B  836 l / 41,527 B on merge-
-#                                                      queue run 44650726479
-#                                                      (#230), plus the same
-#                                                      122 l / ~11,000 B as the
-#                                                      suite; ~15%. Before that,
+#     vm        958 l /  47,565 B  1,100 l / 56,000 B  measured COLD in the guest on
+#               438 tests                              CI run 44658546908 (#241),
+#                                                      which passed every tier;
+#                                                      ~16 l more from #242, then
+#                                                      ~13%. Warm from a Mac it was
+#                                                      747 l / 39,178 B. 836 l /
+#                                                      41,527 B on merge-queue run
+#                                                      44650726479 (#230). Before
+#                                                      that,
 #               747 l /  37,605 B                      measured COLD in the
 #               377 tests                              guest (61 Compiling) on
 #                                                      CI run 39061629777, plus
@@ -175,7 +190,8 @@ vars:
   # (#184). tests/scripts/ci-gate-local.sh holds it there.
   # v0.3.15 supplies the shared tree transfer: TreeSource, TreeMetadata
   # and export_tree, with links and times preserved (#195).
-  FS_CORE_REF: v0.4.3
+  # v0.5.0 supplies the three shared driver layers (`fs_core::layers`).
+  FS_CORE_REF: v0.5.0
   LINUX_HARNESS_URL: https://github.com/antimatter-studios/fs-linux-test-harness.git
   # v0.3.0 is the release with `vm.sh session`, which the test runner runs
   # cargo through so a run ends its use of the VM however it ends; v0.2.0
@@ -489,7 +505,7 @@ tasks:
           guest_args="$guest_args $arg"
         done
         # shellcheck disable=SC2086  # the words are the point
-        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1100 60000 -- \
+        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:vm vm 1100 56000 -- \
           ../fs-linux-test-harness/scripts/vm.sh guest-test $guest_args
         # Xattr inspection adds one kernel case to the previous floor.
         # Bounded export adds two kernel cases; execution remains CI-only.
@@ -524,7 +540,7 @@ tasks:
       - task: test:images
       - task: test:oracle
       - task: test:kernel
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 870 50000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 850 45000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
       # Xattr inspection adds one kernel case to the previous floor.

@@ -22,9 +22,29 @@ use crate::superblock::{Superblock, SuperblockFault, SUPERBLOCK_SIZE};
 use fs_core::BlockRead;
 use std::sync::Arc;
 
+/// The device a volume reads: owned, for a volume a caller opens, or
+/// borrowed, for the salvage adapter, which is lent a source per call.
+enum Device<'d> {
+    Owned(Arc<dyn BlockRead>),
+    Borrowed(&'d dyn BlockRead),
+}
+
+impl<'d> std::ops::Deref for Device<'d> {
+    type Target = dyn BlockRead + 'd;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Device::Owned(dev) => &**dev,
+            Device::Borrowed(dev) => *dev,
+        }
+    }
+}
+
 /// An image opened on its superblock, damaged or not.
-pub struct Volume {
-    dev: Arc<dyn BlockRead>,
+///
+/// `'d` is the device's lifetime: `'static` for a volume opened with
+/// [`Volume::open`], which owns its device.
+pub struct Volume<'d> {
+    dev: Device<'d>,
     sb: Superblock,
     device_size: u64,
 }
@@ -53,7 +73,7 @@ impl VolumeHealth {
     }
 }
 
-impl Volume {
+impl Volume<'static> {
     /// Open an image on its superblock.
     ///
     /// Fails only when the first 96 bytes cannot be read: a device shorter
@@ -68,9 +88,27 @@ impl Volume {
         dev.read_at(0, &mut bytes)?;
         Ok(Volume {
             sb: Superblock::decode(&bytes),
-            dev,
+            dev: Device::Owned(dev),
             device_size,
         })
+    }
+}
+
+impl<'d> Volume<'d> {
+    /// A volume over a borrowed device, with a superblock the caller
+    /// already holds -- the salvage adapter's view of the source it is
+    /// lent, under its own geometry.
+    pub(crate) fn borrowed(dev: &'d dyn BlockRead, sb: Superblock) -> Self {
+        Volume {
+            device_size: dev.size_bytes(),
+            dev: Device::Borrowed(dev),
+            sb,
+        }
+    }
+
+    /// The device, lent read-only.
+    pub fn device(&self) -> &(dyn BlockRead + 'd) {
+        &*self.dev
     }
 
     /// The superblock as the bytes hold it, unjudged.
@@ -107,8 +145,16 @@ impl Volume {
 
     /// The strict open of the same device: the file layer, for an image
     /// that is healthy enough to read files from.
+    ///
+    /// Only a volume that owns its device has one: the strict reader keeps
+    /// the device for the life of the mount.
     pub fn filesystem(&self) -> Result<Filesystem> {
-        Filesystem::open(self.dev.clone())
+        match &self.dev {
+            Device::Owned(dev) => Filesystem::open(dev.clone()),
+            Device::Borrowed(_) => Err(Error::BadSuperblock(
+                "a volume over a borrowed device opens for salvage only",
+            )),
+        }
     }
 
     /// The inode table, framed block by block with every damaged block

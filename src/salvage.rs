@@ -196,7 +196,7 @@ impl Tree {
 /// lookup tables read, when it is made, so each verb works from the same
 /// evidence.
 pub struct Salvage<'v> {
-    volume: &'v Volume,
+    volume: &'v Volume<'v>,
     inodes: TableWalk,
     directories: TableWalk,
     fragments: IndirectTable,
@@ -205,7 +205,7 @@ pub struct Salvage<'v> {
 
 impl<'v> Salvage<'v> {
     /// Walk the volume's tables and read its lookup tables.
-    pub fn new(volume: &'v Volume) -> Self {
+    pub fn new(volume: &'v Volume<'v>) -> Self {
         Salvage {
             inodes: volume.inode_table(),
             directories: volume.directory_table(),
@@ -216,7 +216,7 @@ impl<'v> Salvage<'v> {
     }
 
     /// The volume.
-    pub fn volume(&self) -> &Volume {
+    pub fn volume(&self) -> &Volume<'v> {
         self.volume
     }
 
