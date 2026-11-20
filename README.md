@@ -26,6 +26,9 @@ checks it. Every pull request that changes behaviour updates it.
 
 - `volume` — the volume layer: an image opened on its superblock alone, its
   health and its raw bytes, however damaged the rest is
+- `salvage` — the recovery verbs in SquashFS terms: candidates found three ways,
+  the tree rebuilt from every parent claim, and the capabilities a read-only
+  format lacks
 - `damage` — damage as the primitives report it (kind, severity, byte range)
 - `superblock` — decode the 96-byte superblock, every fault in it at its bytes,
   and the strict parse + validate built on those
