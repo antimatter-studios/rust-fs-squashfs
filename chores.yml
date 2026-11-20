@@ -36,11 +36,13 @@ chore_min_version: 0.6.0
 #   arm64 KVM host, from the run recorded in the pull request that added them:
 #
 #     tier      measured             budget            headroom, and why
-#     unit      312 l, under 18,000  360 l / 18,000 B  measured COLD on CI (run
-#               101 tests                              37477344691: a Cargo.lock
+#     unit      386 l / 20,362 B     450 l / 23,000 B  measured COLD on CI (run
+#               153 tests                              44649614395: a Cargo.lock
 #                                                      change misses the build
-#                                                      cache; warm was 254 l /
-#                                                      13,813 B), then ~15%
+#                                                      cache, and the crate
+#                                                      downloads were 86 l /
+#                                                      3,922 B of it), then
+#                                                      ~13%. Was 312 l at 101
 #     images    138 l /   7,576 B    260 l / 18,000 B  the first --release tier
 #               112 tests                              in a job, so it pays the
 #                                                      cold build too
@@ -399,10 +401,14 @@ tasks:
       # debug run is ASKED to prove it traps an overflow, and
       # tests/ci_profile.rs fails the suite if the gating workflow has no
       # such run — following `chore <task>` into this file to find it.
-      # Budget 400 lines, 20000 bytes: the tier printed 346 lines and 18103
-      # bytes on run 39935270699 (2026-10-23), once the recursive export's
-      # tests joined it (#195), past the 18000 it had.
-      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 400 20000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
+      # Budget 450 lines, 23000 bytes: the tier printed 386 lines and 20362
+      # bytes on run 44649614395 (2026-11-20), of which 86 lines and 3922
+      # bytes were a cold cargo cache downloading the crates (the cache key
+      # is Cargo.lock's hash, so every lockfile change pays it once) and
+      # 300 lines and 16440 bytes were the build and the tests. It was 346
+      # lines and 18103 bytes on run 39935270699 (2026-10-23), past the
+      # 18000 it had before #195.
+      - 'EXPECT_OVERFLOW_CHECKS=1 bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:unit unit 450 23000 -- scripts/test.sh --locked $(scripts/test-targets.sh unit)'
       # 112 executed on 2026-09-28, after the tier grew to cover every
       # crate in the tree: the support crate's 9 tests had never run
       # anywhere (#110). Raised from 95 with that measurement.

@@ -14,6 +14,7 @@ use crate::damage::Damage;
 use crate::decompress::Compressor;
 use crate::error::{Error, Result};
 use crate::fs::Filesystem;
+use crate::indirect::{self, IndirectTable, XattrIdTable};
 use crate::metatable::{walk_table, TableWalk};
 use crate::superblock::{Superblock, SuperblockFault, SUPERBLOCK_SIZE};
 use fs_core::BlockRead;
@@ -136,6 +137,28 @@ impl Volume {
             crate::fs::directory_table_end(&*self.dev, &self.sb),
             "directory table",
         )
+    }
+
+    /// The uid/gid id table, read block by block.
+    pub fn id_table(&self) -> IndirectTable {
+        indirect::id_table(&*self.dev, &self.sb)
+    }
+
+    /// The fragment table, read block by block.
+    pub fn fragment_table(&self) -> IndirectTable {
+        indirect::fragment_table(&*self.dev, &self.sb)
+    }
+
+    /// The export table, read block by block, or `None` when the image
+    /// has none.
+    pub fn export_table(&self) -> Option<IndirectTable> {
+        indirect::export_table(&*self.dev, &self.sb)
+    }
+
+    /// The xattr id table, read block by block, or `None` when the image
+    /// has no attributes.
+    pub fn xattr_id_table(&self) -> Option<XattrIdTable> {
+        indirect::xattr_id_table(&*self.dev, &self.sb)
     }
 
     /// Read source bytes as they are stored, needing no valid structure.
