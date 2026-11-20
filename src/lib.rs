@@ -26,6 +26,8 @@
 //! Layout of the reader, by layer (see `docs/three-layers.md`):
 //! - [`volume`] — the volume layer: an image opened on its superblock
 //!   alone, its health, and its raw bytes, however damaged the rest is
+//! - [`salvage`] — the family's recovery verbs in SquashFS terms: candidates,
+//!   the rebuilt tree, and what a read-only format lacks
 //! - [`damage`] — damage as the primitives report it
 //! - [`superblock`] — decode the 96-byte superblock, list every fault in
 //!   it, and the strict parse built on those
@@ -60,6 +62,7 @@ pub mod inode;
 pub mod metablock;
 pub mod metatable;
 pub mod records;
+pub mod salvage;
 pub mod superblock;
 pub mod table;
 pub mod volume;

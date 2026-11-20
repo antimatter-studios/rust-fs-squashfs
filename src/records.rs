@@ -271,3 +271,140 @@ pub fn listing_at(walk: &TableWalk, dir: &Inode) -> ListingRead {
         fault,
     }
 }
+
+/// A cursor over one contiguous run of decoded bytes.
+struct SliceCursor<'s> {
+    bytes: &'s [u8],
+    pos: usize,
+}
+
+impl RecordReader for SliceCursor<'_> {
+    fn read_exact(&mut self, n: usize) -> Result<Vec<u8>> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .filter(|&e| e <= self.bytes.len())
+            .ok_or(Error::BadMetadata("record runs past the decoded run"))?;
+        let out = self.bytes[self.pos..end].to_vec();
+        self.pos = end;
+        Ok(out)
+    }
+}
+
+/// An inode found by scanning the inode table, and where.
+#[derive(Debug, Clone)]
+pub struct ScannedInode {
+    /// The packed reference that names it: block offset from the table
+    /// start in the high 48 bits, offset in the decoded block in the low 16.
+    pub inode_ref: u64,
+    /// The inode as decoded.
+    pub record: InodeRecord,
+}
+
+/// What a scan of the inode table found.
+#[derive(Debug, Clone, Default)]
+pub struct InodeScan {
+    /// Every inode decoded, in table order.
+    pub inodes: Vec<ScannedInode>,
+    /// Every place the scan lost the run of records and how many bytes of
+    /// decoded inode table it skipped before finding the next record:
+    /// `(inode reference where it was lost, bytes skipped)`.
+    pub skipped: Vec<(u64, usize)>,
+}
+
+/// Whether a decoded record is one `mksquashfs` could have written: a
+/// known type and an inode number inside the image's count.
+fn plausible(record: &InodeRecord, inode_count: u32) -> bool {
+    let n = record.inode.inode_number;
+    !matches!(record.inode.file_type(), crate::inode::FileType::Unknown)
+        && n >= 1
+        && n <= inode_count
+}
+
+/// Scan every run of contiguous decoded blocks in a walked inode table
+/// for inodes, without needing any reference to them.
+///
+/// `mksquashfs` writes inodes back to back from the start of the table,
+/// so the first run is decoded from its first byte. A run that starts
+/// after damage may start inside a record that began in the lost block;
+/// the scan then looks for the first offset where a plausible record
+/// (a known type, an inode number within `inode_count`) is followed by a
+/// second one, or ends the run exactly, and goes on from there. The
+/// bytes passed over are reported in [`InodeScan::skipped`].
+pub fn scan_inodes(walk: &TableWalk, block_size: u32, inode_count: u32) -> InodeScan {
+    let mut scan = InodeScan::default();
+    let mut i = 0;
+    while i < walk.blocks.len() {
+        if walk.blocks[i].bytes().is_none() {
+            i += 1;
+            continue;
+        }
+        // One run: decoded blocks, each starting where the last ends.
+        let first = i;
+        let mut stream = Vec::new();
+        let mut starts = Vec::new(); // (stream position, block offset from table start)
+        while let Some(bytes) = walk.blocks.get(i).and_then(|b| b.bytes()) {
+            starts.push((stream.len(), walk.blocks[i].offset - walk.start));
+            stream.extend_from_slice(bytes);
+            let follows = walk.blocks[i].next();
+            i += 1;
+            if walk.blocks.get(i).map(|b| Some(b.offset)) != Some(follows) {
+                break;
+            }
+        }
+        let reference = |pos: usize| {
+            let k = starts.partition_point(|&(s, _)| s <= pos) - 1;
+            (starts[k].1 << 16) | (pos - starts[k].0) as u64
+        };
+        let parse_at = |pos: usize| {
+            let mut cur = SliceCursor {
+                bytes: &stream,
+                pos,
+            };
+            inode::parse(&mut cur, block_size)
+                .ok()
+                .filter(|r| plausible(r, inode_count))
+        };
+        let anchored = |pos: usize| {
+            parse_at(pos).filter(|r| {
+                let next = pos + r.len;
+                next == stream.len() || parse_at(next).is_some()
+            })
+        };
+        let at_table_start = walk.blocks[first].offset == walk.start;
+        let mut pos = 0;
+        let mut need_anchor = !at_table_start;
+        while pos < stream.len() {
+            let found = if need_anchor {
+                anchored(pos)
+            } else {
+                parse_at(pos)
+            };
+            match found {
+                Some(record) => {
+                    need_anchor = false;
+                    let len = record.len;
+                    scan.inodes.push(ScannedInode {
+                        inode_ref: reference(pos),
+                        record,
+                    });
+                    pos += len;
+                }
+                None => {
+                    // Lost: look for the next anchored record.
+                    let lost = pos;
+                    let mut p = pos + 1;
+                    while p < stream.len() && anchored(p).is_none() {
+                        p += 1;
+                    }
+                    // Includes a run's last record when it runs into a
+                    // lost block: its bytes here are all there is of it.
+                    scan.skipped.push((reference(lost), p - lost));
+                    need_anchor = true;
+                    pos = p;
+                }
+            }
+        }
+    }
+    scan
+}
