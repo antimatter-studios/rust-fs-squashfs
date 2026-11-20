@@ -31,6 +31,8 @@
 //!   it, and the strict parse built on those
 //! - [`metatable`] — metadata blocks read one at a time and tables walked
 //!   block by block, each damaged block reported, framing found again
+//! - [`records`] — inodes and directory listings decoded out of a walked
+//!   table, each lost only when its own bytes are
 //! - [`indirect`] — the id, fragment, export and xattr id tables read one
 //!   block at a time, so a damaged block loses only its own entries
 //! - [`decompress`] — codec dispatch (gzip / xz / lz4 / zstd / lzo)
@@ -54,6 +56,7 @@ pub mod indirect;
 pub mod inode;
 pub mod metablock;
 pub mod metatable;
+pub mod records;
 pub mod superblock;
 pub mod table;
 pub mod volume;
@@ -65,10 +68,10 @@ pub mod capi;
 
 pub use damage::{Damage, DamageKind, Severity};
 pub use decompress::Compressor;
-pub use dir::DirEntry;
+pub use dir::{DirEntry, Listing, ListingFault};
 pub use error::{Error, Result};
 pub use fs::Filesystem;
-pub use inode::{FileType, Inode};
+pub use inode::{FileType, Inode, InodeRecord};
 pub use superblock::{Superblock, SuperblockFault, SuperblockRule};
 pub use volume::{Volume, VolumeHealth};
 pub use xattr::XattrEntry;
