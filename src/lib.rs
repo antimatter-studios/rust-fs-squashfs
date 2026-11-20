@@ -28,6 +28,8 @@
 //!   alone, its health, and its raw bytes, however damaged the rest is
 //! - [`salvage`] — the family's recovery verbs in SquashFS terms: candidates,
 //!   the rebuilt tree, and what a read-only format lacks
+//! - [`salvage_read`] — the salvage verbs that read: extents, damage, raw
+//!   extents, and a file materialized with the source of every range
 //! - [`damage`] — damage as the primitives report it
 //! - [`superblock`] — decode the 96-byte superblock, list every fault in
 //!   it, and the strict parse built on those
@@ -63,6 +65,7 @@ pub mod metablock;
 pub mod metatable;
 pub mod records;
 pub mod salvage;
+pub mod salvage_read;
 pub mod superblock;
 pub mod table;
 pub mod volume;
