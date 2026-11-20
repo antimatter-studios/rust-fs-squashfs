@@ -153,9 +153,53 @@ let mut buf = vec![0u8; inode.file_size as usize];
 fs.read_file(&inode, 0, &mut buf)?;
 ```
 
-The crate is organised as three layers -- the volume, the on-disk primitives
-with the salvage verbs over them, and the file API above -- mapped out with
-what remains to be built in [docs/three-layers.md](docs/three-layers.md).
+## Three layers, and salvaging a damaged image
+
+The crate has three layers, mapped in [docs/three-layers.md](docs/three-layers.md):
+
+- **Volume** (`Volume`): an image opened on a readable superblock alone --
+  its fields however wrong, every fault at its bytes, its health, raw reads.
+- **Primitives**: the metadata tables walked block by block (`metatable`),
+  the lookup tables read block by block (`indirect`), inodes and listings
+  decoded past damage elsewhere (`records`), and a file's blocks read one by
+  one (`data`). Each returns what the bytes say and reports damage; none
+  refuses a structure for being damaged.
+- **Files** (`Filesystem`): the strict reader above, for a healthy image.
+
+The salvage verbs (`Salvage`, `salvage_read`) sit on the primitives:
+
+```rust
+use fs_squashfs::salvage::Salvage;
+use fs_squashfs::salvage_read::MissingPolicy;
+use fs_squashfs::Volume;
+
+let volume = Volume::open(dev)?;               // opens on any readable superblock
+let salvage = Salvage::new(&volume);
+let found = salvage.find_candidates();         // table scan + export table + directories
+let tree = salvage.rebuild_tree(&found.candidates);
+let audit = salvage.report_damage(&found.candidates, true);
+for c in found.candidates.iter().filter(|c| c.record.inode.is_regular_file()) {
+    let mut out = Vec::new();
+    let report = salvage.materialize(c, &mut out, MissingPolicy::Stop)?;
+    // report.ranges names the source of every range; report.complete()
+    // says whether every byte written is the file's.
+}
+```
+
+What it does not do, by design:
+
+- **No undelete.** SquashFS deletes nothing, so there is nothing to undelete;
+  `Salvage::capabilities` lists the deletion features, and cluster steps, as
+  unsupported rather than returning empty results.
+- **Missing bytes are never zeros.** Only a block the format records as sparse
+  reads as zeros. A block that cannot be read or decoded is reported missing;
+  `materialize` stops before it, or writes zeros that its report names.
+- **An uncompressed block has no integrity check.** SquashFS has no checksums:
+  a compressed stream that decodes to exactly its length is the only check, and
+  `BlockContent::Bytes` says whether a block had one.
+- **The source is never written.** Every layer reads through `BlockRead`;
+  nothing in the crate can write, and `materialize` writes only to the sink it
+  is given, which must not be the source device.
 
 ## Tests
 
