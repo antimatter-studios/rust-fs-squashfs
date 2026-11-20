@@ -38,6 +38,8 @@ checks it. Every pull request that changes behaviour updates it.
 - `metatable` — metadata blocks read one at a time, and metadata tables walked
   block by block with every damaged block reported and the framing found again
 - `table` — indirect lookup tables (id, fragment, export)
+- `indirect` — the same lookup tables and the xattr id table read one block at a
+  time, so a damaged block loses only its own entries
 - `inode` — all SquashFS inode shapes
 - `dir` — directory-listing parser
 - `xattr` — extended attributes: the three-level id table and the name/value pairs

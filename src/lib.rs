@@ -31,6 +31,8 @@
 //!   it, and the strict parse built on those
 //! - [`metatable`] — metadata blocks read one at a time and tables walked
 //!   block by block, each damaged block reported, framing found again
+//! - [`indirect`] — the id, fragment, export and xattr id tables read one
+//!   block at a time, so a damaged block loses only its own entries
 //! - [`decompress`] — codec dispatch (gzip / xz / lz4 / zstd / lzo)
 //! - [`metablock`] — 8 KiB metadata-block reader + cross-block cursor
 //! - [`table`] — indirect lookup tables (id, fragment, export)
@@ -48,6 +50,7 @@ pub mod decompress;
 pub mod dir;
 pub mod error;
 pub mod fs;
+pub mod indirect;
 pub mod inode;
 pub mod metablock;
 pub mod metatable;
