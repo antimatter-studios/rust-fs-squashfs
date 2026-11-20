@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
 
-use crate::decompress::{self, Compressor};
+use crate::decompress::Compressor;
 use crate::dir::{self, DirEntry};
 use crate::error::{Error, Result};
 use crate::inode::Inode;
@@ -769,39 +769,18 @@ impl Filesystem {
         Ok(block)
     }
 
-    /// The device read and the codec, with no cache in front of them.
+    /// The device read and the codec, with no cache in front of them:
+    /// [`crate::data::decode_stored_block`], which the salvage path
+    /// shares.
     fn decode_data_block(&self, abs_off: u64, size_word: u32, max_out: usize) -> Result<Vec<u8>> {
-        let on_disk = table::data_on_disk_size(size_word) as usize;
-        // THE SIZE WORD IS THE ALLOCATION, and it comes off the disk.
-        //
-        // `DATA_SIZE_MASK` is 24 bits, so `on_disk` reaches 16 MiB
-        // while `block_size` is at most 1 MiB. A block whose compressed
-        // form is larger than the block it decompresses to is corrupt
-        // by definition — `mksquashfs` stores such a block uncompressed
-        // instead — so the ceiling is the archive's own block size.
-        //
-        // The metadata sibling has had this bound all along
-        // (`metablock.rs`: `on_disk == 0 || on_disk > METADATA_SIZE`).
-        // Without it here the read still failed, on the short read or
-        // the decoder's own ceiling, but only after allocating and
-        // reading up to 16 MiB per logical block, inside a read loop.
-        if on_disk > self.sb.block_size as usize {
-            return Err(Error::BadInode(
-                "data block's on-disk size exceeds the archive's block size",
-            ));
-        }
-        let mut raw = vec![0u8; on_disk];
-        self.dev.read_at(abs_off, &mut raw)?;
-        if table::data_is_compressed(size_word) {
-            decompress::decompress(self.comp, &raw, max_out)
-        } else {
-            if raw.len() > max_out {
-                return Err(Error::BadInode(
-                    "uncompressed data block exceeds block size",
-                ));
-            }
-            Ok(raw)
-        }
+        crate::data::decode_stored_block(
+            &*self.dev,
+            self.comp,
+            self.sb.block_size,
+            abs_off,
+            size_word,
+            max_out,
+        )
     }
 }
 

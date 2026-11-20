@@ -33,6 +33,8 @@
 //!   block by block, each damaged block reported, framing found again
 //! - [`records`] — inodes and directory listings decoded out of a walked
 //!   table, each lost only when its own bytes are
+//! - [`data`] — a file's blocks as stored, and what each holds, with a
+//!   sparse block and a missing one kept apart
 //! - [`indirect`] — the id, fragment, export and xattr id tables read one
 //!   block at a time, so a damaged block loses only its own entries
 //! - [`decompress`] — codec dispatch (gzip / xz / lz4 / zstd / lzo)
@@ -48,6 +50,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod damage;
+pub mod data;
 pub mod decompress;
 pub mod dir;
 pub mod error;
