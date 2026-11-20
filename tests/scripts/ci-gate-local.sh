@@ -47,7 +47,7 @@ out="$(gate "$REPO")" || fail "the unchanged workflow fails without CI's env: $o
 # The declaration the checker used is the workflow's: drop one job from it
 # and that job is reported.
 reset
-sed -i.t 's/^\(  CI_GATE_NON_GATING: "[^"]*\) cli"/\1"/' "$SANDBOX/$WF" && rm -f "$SANDBOX/$WF.t"
+sed -i.t 's/^\(  CI_GATE_NON_GATING: "[^"]*\) cli \([^"]*\)"/\1 \2"/' "$SANDBOX/$WF" && rm -f "$SANDBOX/$WF.t"
 if cmp -s "$SANDBOX/$WF" "$REPO/$WF"; then
     fail "the declaration was not edited, so the next case proves nothing"
 fi
@@ -61,7 +61,7 @@ fi
 # pinned checker, provided ci-ok reads that output. It is a positive control,
 # not evidence that an undeclared profile-conditional job must be refused.
 reset
-sed -i.t 's/^\(    needs: \[changes,\) unit,/\1 extra, unit,/' "$SANDBOX/$WF" && rm -f "$SANDBOX/$WF.t"
+sed -i.t 's/^\(    needs: \[changes-gate, changes,\) unit-gate,/\1 extra, unit-gate,/' "$SANDBOX/$WF" && rm -f "$SANDBOX/$WF.t"
 cat >>"$SANDBOX/$WF" <<'YAML'
   extra:
     needs: changes
@@ -70,7 +70,7 @@ cat >>"$SANDBOX/$WF" <<'YAML'
     steps:
       - run: "true"
 YAML
-grep -q 'needs: \[changes, extra,' "$SANDBOX/$WF" ||
+grep -q 'needs: \[changes-gate, changes, extra,' "$SANDBOX/$WF" ||
     fail "\`extra\` was not added to ci-ok's needs, so the next case proves nothing"
 out="$(gate "$SANDBOX")" || fail "an allowed path-gated job fails: $out"
 

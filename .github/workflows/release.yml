@@ -18,11 +18,24 @@ env:
   FS_CORE_REF: v0.5.1
 
 jobs:
+  test-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   test:
     name: test
-    runs-on: ubuntu-latest
+    needs: test-gate
+    runs-on: ${{ needs.test-gate.outputs.runner }}
     steps:
       - uses: actions/checkout@v5
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
 
       # rust-fs-core's shared scripts come from a sibling checkout
       # (../rust-fs-core) at FS_CORE_REF; the crate itself comes from
@@ -126,10 +139,20 @@ jobs:
       core-ref: v0.5.1
       toolchain: 1.95.0
 
+  publish-gate:
+    needs: test
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   publish:
     name: publish to crates.io
-    needs: test
-    runs-on: ubuntu-latest
+    needs: [test, publish-gate]
+    runs-on: ${{ needs.publish-gate.outputs.runner }}
     environment: release
     # The only job with any write grant, because it is the only one that
     # needs one: an OIDC token for crates.io trusted publishing and for
@@ -143,6 +166,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - name: C toolchain for the gated runner
+        if: runner.environment == 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
 
       - name: clone rust-fs-core sibling
         shell: bash

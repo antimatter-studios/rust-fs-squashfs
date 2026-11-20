@@ -1085,6 +1085,19 @@ fn assert_full_profile_job(job: &Yaml, name: &str, workflow: &str) {
     assert_steps_unconditional(job, name, workflow);
 }
 
+/// A gate job's single `pick` step asks for the given runner class.
+fn assert_gate_picks(document: &Yaml, gate: &str, class: &str) {
+    let job = field(document, "jobs")
+        .and_then(|jobs| field(jobs, gate))
+        .unwrap_or_else(|| panic!("ci.yml has no jobs.{gate}"));
+    let picks = steps_of(job, gate).iter().map(run_of).collect::<Vec<_>>();
+    assert_eq!(
+        picks,
+        vec![format!("runner-gate pick {class}")],
+        "jobs.{gate} must run exactly `runner-gate pick {class}`"
+    );
+}
+
 fn assert_steps_unconditional(job: &Yaml, name: &str, workflow: &str) {
     for (at, step) in steps_of(job, name).iter().enumerate() {
         let keys = keys_of(step);
@@ -1108,7 +1121,14 @@ fn assert_steps_unconditional(job: &Yaml, name: &str, workflow: &str) {
             .iter()
             .map(String::as_str)
             .filter(|k| match *k {
-                "if" => commands,
+                // The one condition a command step may carry: the install of
+                // what a hosted image has and a self-hosted one lacks. It
+                // decides where the step runs, never whether the gate holds.
+                "if" => {
+                    commands
+                        && field(step, "if").and_then(Yaml::as_str)
+                            != Some("runner.environment == 'self-hosted'")
+                }
                 "continue-on-error" => true,
                 _ => false,
             })
@@ -1177,12 +1197,13 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // the kernel tests can run at all.
     let test = job(&document, "test", &path);
     assert_full_profile_job(test, "test", "ci.yml");
-    let runner = field(test, "runs-on").and_then(Yaml::as_str).unwrap_or("");
-    assert!(
-        runner.starts_with("ubuntu-") && !runner.contains("arm"),
-        "jobs.test must run on an x86_64 ubuntu runner: the oracle tools and the kernel \
-         oracles run in a VM, and only those runners have KVM; got {runner:?}"
+    // The runner comes from the job's gate, which must ask for x86_64 with KVM.
+    assert_eq!(
+        field(test, "runs-on").and_then(Yaml::as_str),
+        Some("${{ needs.test-gate.outputs.runner }}"),
+        "jobs.test must take its runner from test-gate"
     );
+    assert_gate_picks(&document, "test-gate", "linux-x64-kvm");
     // NO `fixtures` JOB, AND THAT IS THIS REPOSITORY'S SHAPE RATHER THAN AN
     // OMISSION. The sibling drivers generate a matrix of images with their
     // mkfs before the suite runs, so their test job depends on that
@@ -1194,7 +1215,9 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     // to copy a sibling fails here and has to be justified: a dependency on
     // a job that produces nothing is a dependency that only slows the gate.
     assert!(
-        needs_of(test).iter().all(|n| n == "changes"),
+        needs_of(test)
+            .iter()
+            .all(|n| n == "changes" || n == "test-gate"),
         "jobs.test needs {:?}, but this repository generates no fixtures: the one \
          committed image is test-disks/squashfs-basic.sqfs and the rest are built \
          in the guest by the tests that read them",
@@ -1253,9 +1276,10 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
     assert_full_profile_job(arm, "test-arm64", "ci.yml");
     assert_eq!(
         field(arm, "runs-on").and_then(Yaml::as_str),
-        Some("ubuntu-24.04-arm"),
-        "jobs.test-arm64 must run on GitHub's arm64 runner"
+        Some("${{ needs.test-arm64-gate.outputs.runner }}"),
+        "jobs.test-arm64 must take its runner from test-arm64-gate"
     );
+    assert_gate_picks(&document, "test-arm64-gate", "linux-arm64");
     let arm_steps = steps_of(arm, "test-arm64");
     for task in ["lint", "test:unit", "test:images"] {
         assert!(
@@ -3215,8 +3239,8 @@ fn profile_events_publish_the_plan_and_full_jobs_remain_required() {
             ("${{ github.event_name }}", "pull_request"),
             ("echo \"profile=$profile\" >> \"$GITHUB_OUTPUT\"", "true"),
             (
-                "needs: [changes, unit, test, test-arm64, suite-in-vm, cli, semver]",
-                "needs: [changes, unit, test-arm64, suite-in-vm, cli, semver]",
+                "needs: [changes-gate, changes, unit-gate, unit, test-gate, test, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, cli-gate, cli, semver-gate, semver, ci-ok-gate]",
+                "needs: [changes-gate, changes, unit-gate, unit, test-gate, test-arm64-gate, test-arm64, suite-in-vm-gate, suite-in-vm, cli-gate, cli, semver-gate, semver, ci-ok-gate]",
             ),
             ("if: always()", "if: false"),
             ("  test:\n", "  test:\n    continue-on-error: true\n"),
