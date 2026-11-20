@@ -210,7 +210,69 @@ impl Inode {
         let start_abs = r.start_abs(sb.inode_table_start);
         let in_block = r.in_block;
         let mut cur = MetaCursor::new(dev, sb, start_abs, in_block, cache)?;
+        Ok(parse(&mut cur, sb.block_size)?.inode)
+    }
+}
 
+/// An inode as decoded, with what [`Inode`] does not keep.
+#[derive(Debug, Clone)]
+pub struct InodeRecord {
+    /// The inode.
+    pub inode: Inode,
+    /// A directory inode's record of its parent's inode number; `None`
+    /// for every other type. The root's is one past the inode count.
+    pub parent: Option<u32>,
+    /// How many bytes of the decoded inode table the record occupies.
+    pub len: usize,
+}
+
+/// Where a record's bytes come from: a cursor over metadata blocks read
+/// from the device, or over a table already walked.
+pub(crate) trait RecordReader {
+    fn read_exact(&mut self, n: usize) -> Result<Vec<u8>>;
+    fn read_u16(&mut self) -> Result<u16> {
+        let b = self.read_exact(2)?;
+        Ok(u16::from_le_bytes([b[0], b[1]]))
+    }
+    fn read_u32(&mut self) -> Result<u32> {
+        let b = self.read_exact(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn read_u64(&mut self) -> Result<u64> {
+        let b = self.read_exact(8)?;
+        Ok(u64::from_le_bytes(b.try_into().expect("8 bytes")))
+    }
+}
+
+impl<R: BlockRead + ?Sized> RecordReader for MetaCursor<'_, R> {
+    fn read_exact(&mut self, n: usize) -> Result<Vec<u8>> {
+        MetaCursor::read_exact(self, n)
+    }
+}
+
+/// Counts the bytes a parse takes, for [`InodeRecord::len`].
+struct Counting<'c, C: RecordReader> {
+    inner: &'c mut C,
+    taken: usize,
+}
+
+impl<C: RecordReader> RecordReader for Counting<'_, C> {
+    fn read_exact(&mut self, n: usize) -> Result<Vec<u8>> {
+        let out = self.inner.read_exact(n)?;
+        self.taken += n;
+        Ok(out)
+    }
+}
+
+/// Decode one inode from `cur`, for an image of `block_size` data blocks.
+pub(crate) fn parse<C: RecordReader>(cur: &mut C, block_size: u32) -> Result<InodeRecord> {
+    let mut cur = Counting {
+        inner: cur,
+        taken: 0,
+    };
+    let mut parent = None;
+    let inode = {
+        let cur = &mut cur;
         // ----- 16-byte common header -----
         let inode_type = cur.read_u16()?;
         let permissions = cur.read_u16()?;
@@ -239,20 +301,20 @@ impl Inode {
             xattr_index: crate::xattr::SQUASHFS_INVALID_XATTR,
         };
 
-        let block_size = sb.block_size as u64;
+        let block_size = u64::from(block_size);
         match inode_type {
             TYPE_BASIC_DIR => {
                 inode.dir_start_block = cur.read_u32()?;
                 inode.nlink = cur.read_u32()?;
                 inode.file_size = cur.read_u16()? as u64;
                 inode.dir_block_offset = cur.read_u16()?;
-                let _parent = cur.read_u32()?;
+                parent = Some(cur.read_u32()?);
             }
             TYPE_EXT_DIR => {
                 inode.nlink = cur.read_u32()?;
                 inode.file_size = cur.read_u32()? as u64;
                 inode.dir_start_block = cur.read_u32()?;
-                let _parent = cur.read_u32()?;
+                parent = Some(cur.read_u32()?);
                 let _index_count = cur.read_u16()?;
                 inode.dir_block_offset = cur.read_u16()?;
                 inode.xattr_index = cur.read_u32()?;
@@ -265,7 +327,7 @@ impl Inode {
                 inode.fragment_offset = cur.read_u32()?;
                 inode.file_size = cur.read_u32()? as u64;
                 let n = block_count(inode.file_size, block_size, inode.fragment_index)?;
-                inode.block_sizes = read_block_sizes(&mut cur, n)?;
+                inode.block_sizes = read_block_sizes(cur, n)?;
             }
             TYPE_EXT_FILE => {
                 inode.blocks_start = cur.read_u64()?;
@@ -276,18 +338,18 @@ impl Inode {
                 inode.fragment_offset = cur.read_u32()?;
                 inode.xattr_index = cur.read_u32()?;
                 let n = block_count(inode.file_size, block_size, inode.fragment_index)?;
-                inode.block_sizes = read_block_sizes(&mut cur, n)?;
+                inode.block_sizes = read_block_sizes(cur, n)?;
             }
             TYPE_BASIC_SYMLINK => {
                 inode.nlink = cur.read_u32()?;
                 let target_size = cur.read_u32()?;
-                inode.symlink_target = read_symlink(&mut cur, target_size)?;
+                inode.symlink_target = read_symlink(cur, target_size)?;
                 inode.file_size = target_size as u64;
             }
             TYPE_EXT_SYMLINK => {
                 inode.nlink = cur.read_u32()?;
                 let target_size = cur.read_u32()?;
-                inode.symlink_target = read_symlink(&mut cur, target_size)?;
+                inode.symlink_target = read_symlink(cur, target_size)?;
                 inode.file_size = target_size as u64;
                 inode.xattr_index = cur.read_u32()?;
             }
@@ -314,8 +376,13 @@ impl Inode {
                 }));
             }
         }
-        Ok(inode)
-    }
+        inode
+    };
+    Ok(InodeRecord {
+        inode,
+        parent,
+        len: cur.taken,
+    })
 }
 
 /// Number of full data blocks for a file. With a tail fragment the
@@ -332,7 +399,7 @@ fn block_count(file_size: u64, block_size: u64, fragment_index: u32) -> Result<u
     Ok(n)
 }
 
-fn read_block_sizes<R: BlockRead + ?Sized>(cur: &mut MetaCursor<R>, n: u64) -> Result<Vec<u32>> {
+fn read_block_sizes<C: RecordReader>(cur: &mut C, n: u64) -> Result<Vec<u32>> {
     // Reserved for what a plausible file needs, not for what the
     // sanity bound allows. `n` is bounded by `MAX_BLOCKS`, which is
     // 2^24 -- 64 MiB of u32s reserved before the first entry is read,
@@ -345,7 +412,7 @@ fn read_block_sizes<R: BlockRead + ?Sized>(cur: &mut MetaCursor<R>, n: u64) -> R
     Ok(v)
 }
 
-fn read_symlink<R: BlockRead + ?Sized>(cur: &mut MetaCursor<R>, size: u32) -> Result<Vec<u8>> {
+fn read_symlink<C: RecordReader>(cur: &mut C, size: u32) -> Result<Vec<u8>> {
     if size > MAX_SYMLINK {
         return Err(Error::BadInode("symlink target exceeds sanity bound"));
     }

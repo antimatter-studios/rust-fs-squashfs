@@ -38,10 +38,12 @@ checks it. Every pull request that changes behaviour updates it.
 - `metatable` — metadata blocks read one at a time, and metadata tables walked
   block by block with every damaged block reported and the framing found again
 - `table` — indirect lookup tables (id, fragment, export)
+- `records` — inodes and directory listings decoded out of a walked table, each
+  lost only when its own bytes are
 - `indirect` — the same lookup tables and the xattr id table read one block at a
   time, so a damaged block loses only its own entries
 - `inode` — all SquashFS inode shapes
-- `dir` — directory-listing parser
+- `dir` — directory-listing parser, strict or keeping every entry before a fault
 - `xattr` — extended attributes: the three-level id table and the name/value pairs
 - `fs` — top-level handle: path lookup, dir listing, file/symlink read, attributes
 - `error` — the crate's `Error` type and its errno mapping for the C ABI

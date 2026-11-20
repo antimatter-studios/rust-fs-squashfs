@@ -45,17 +45,65 @@ pub struct DirEntry {
     pub inode_number: u32,
 }
 
+/// A directory listing decoded as far as it goes.
+#[derive(Debug, Clone)]
+pub struct Listing {
+    /// Every entry before the first fault, in listing order.
+    pub entries: Vec<DirEntry>,
+    /// Where the listing stopped making sense, and why; `None` when the
+    /// whole buffer decoded.
+    pub fault: Option<ListingFault>,
+}
+
+/// Where a listing stopped decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListingFault {
+    /// Byte offset into the listing of the header or entry that is wrong.
+    pub offset: usize,
+    /// Why, in the strict parse's words.
+    pub reason: &'static str,
+}
+
 /// Parse a directory listing buffer into entries (linear order). `.` and
 /// `..` are implicit in SquashFS and are NOT included.
+///
+/// [`parse_listing_partial`], refused on its fault.
 pub fn parse_listing(buf: &[u8]) -> Result<Vec<DirEntry>> {
+    let listing = parse_listing_partial(buf);
+    match listing.fault {
+        Some(fault) => Err(Error::BadDirent(fault.reason)),
+        None => Ok(listing.entries),
+    }
+}
+
+/// Parse a directory listing, keeping every entry before the first
+/// fault rather than refusing the whole listing for it.
+///
+/// A listing is a run of headers, each over up to 256 entries, so a
+/// fault in one header or entry leaves nothing after it to frame by: the
+/// parse stops there and reports where.
+pub fn parse_listing_partial(buf: &[u8]) -> Listing {
     let mut out = Vec::new();
     let mut p = 0usize;
+    let mut at: usize;
+    macro_rules! fault {
+        ($reason:expr) => {
+            return Listing {
+                entries: out,
+                fault: Some(ListingFault {
+                    offset: at,
+                    reason: $reason,
+                }),
+            }
+        };
+    }
 
     while p < buf.len() {
+        at = p;
         // A trailing run shorter than a header is malformed; but an exact
         // end is fine (handled by the while condition).
         if p + 12 > buf.len() {
-            return Err(Error::BadDirent("truncated directory header"));
+            fault!("truncated directory header");
         }
         let count = u32::from_le_bytes(buf[p..p + 4].try_into().unwrap());
         let start = u32::from_le_bytes(buf[p + 4..p + 8].try_into().unwrap());
@@ -63,16 +111,17 @@ pub fn parse_listing(buf: &[u8]) -> Result<Vec<DirEntry>> {
         p += 12;
 
         // `count` is entries-minus-one.
-        let entries = (count as usize)
-            .checked_add(1)
-            .ok_or(Error::BadDirent("directory header count overflow"))?;
+        let Some(entries) = (count as usize).checked_add(1) else {
+            fault!("directory header count overflow");
+        };
         if entries > MAX_ENTRIES_PER_HEADER {
-            return Err(Error::BadDirent("directory header count > 256"));
+            fault!("directory header count > 256");
         }
 
         for _ in 0..entries {
+            at = p;
             if p + 8 > buf.len() {
-                return Err(Error::BadDirent("truncated directory entry header"));
+                fault!("truncated directory entry header");
             }
             let offset = u16::from_le_bytes(buf[p..p + 2].try_into().unwrap());
             let inode_offset = i16::from_le_bytes(buf[p + 2..p + 4].try_into().unwrap());
@@ -82,22 +131,22 @@ pub fn parse_listing(buf: &[u8]) -> Result<Vec<DirEntry>> {
 
             let name_len = name_size as usize + 1;
             if name_len > SQUASHFS_NAME_LEN {
-                return Err(Error::BadDirent("entry name too long"));
+                fault!("entry name too long");
             }
             if p + name_len > buf.len() {
-                return Err(Error::BadDirent("truncated directory entry name"));
+                fault!("truncated directory entry name");
             }
             let name = buf[p..p + name_len].to_vec();
             p += name_len;
 
             if name == b"." || name == b".." {
-                return Err(Error::BadDirent("directory entry name is reserved"));
+                fault!("directory entry name is reserved");
             }
             if name.contains(&b'/') {
-                return Err(Error::BadDirent("directory entry name contains '/'"));
+                fault!("directory entry name contains '/'");
             }
             if name.contains(&0) {
-                return Err(Error::BadDirent("directory entry name contains NUL"));
+                fault!("directory entry name contains NUL");
             }
 
             let inode_ref = ((start as u64) << 16) | (offset as u64);
@@ -112,7 +161,10 @@ pub fn parse_listing(buf: &[u8]) -> Result<Vec<DirEntry>> {
             });
         }
     }
-    Ok(out)
+    Listing {
+        entries: out,
+        fault: None,
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +204,44 @@ pub(crate) mod tests {
         assert_eq!(entries[1].name, b"sub");
         assert_eq!(entries[1].inode_ref, (5u64 << 16) | 0x80);
         assert_eq!(entries[1].inode_number, 103);
+    }
+
+    #[test]
+    fn a_partial_parse_keeps_every_entry_before_the_fault() {
+        let mut buf = synth_listing(5, 100, &[(b"one", 2, 0x10, 0), (b"two", 2, 0x20, 1)]);
+        let second = buf.len();
+        buf.extend_from_slice(&synth_listing(
+            6,
+            200,
+            &[(b"ok", 2, 0x30, 0), (b"b/d", 2, 0x40, 1)],
+        ));
+        let bad_entry = buf.len() - (8 + 3);
+        let listing = parse_listing_partial(&buf);
+        let names: Vec<_> = listing.entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, [b"one".to_vec(), b"two".to_vec(), b"ok".to_vec()]);
+        assert_eq!(
+            listing.fault,
+            Some(ListingFault {
+                offset: bad_entry,
+                reason: "directory entry name contains '/'"
+            })
+        );
+        assert!(second < bad_entry);
+        // The strict parse refuses the same buffer with the same reason.
+        match parse_listing(&buf) {
+            Err(Error::BadDirent(why)) => assert_eq!(why, "directory entry name contains '/'"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_truncated_header_is_a_fault_at_its_start() {
+        let mut buf = synth_listing(5, 100, &[(b"one", 2, 0x10, 0)]);
+        let cut = buf.len();
+        buf.extend_from_slice(&[1, 2, 3]);
+        let listing = parse_listing_partial(&buf);
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.fault.unwrap().offset, cut);
     }
 
     #[test]
