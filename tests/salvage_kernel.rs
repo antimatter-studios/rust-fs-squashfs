@@ -12,6 +12,9 @@
 mod common;
 
 use common::{dir, file, Node};
+use fs_core::layers::salvage::{Extent, SalvageAdapter};
+use fs_core::layers::{OpenVolume, PrimitiveAPI};
+use fs_squashfs::layers::SquashfsVolume;
 use fs_squashfs::records::inode_at;
 use fs_squashfs::salvage::Salvage;
 use fs_squashfs::Volume;
@@ -57,6 +60,53 @@ fn salvage_finds_every_file_the_kernel_reaches_and_the_ones_it_cannot() {
 
     // Corrupt the inode-table block holding b's inode.
     let intact = Volume::open(common::MemDev::arc(art.bytes.clone())).unwrap();
+    let directory_blocks = intact.directory_table();
+    assert!(directory_blocks.blocks.len() > 1);
+    let mut directory_damage = art.bytes.clone();
+    let directory_at = directory_blocks.blocks[0].offset;
+    directory_damage[directory_at as usize..directory_at as usize + 2].fill(0);
+    let directory_source = common::MemDev::arc(directory_damage);
+    let directory_volume = SquashfsVolume::open_for_salvage(directory_source.clone()).unwrap();
+    let directory_adapter = directory_volume.adapter().unwrap();
+    let mut directory_candidates = Vec::new();
+    directory_adapter
+        .find_candidates(
+            &*directory_source,
+            Extent::new(0, directory_source.size_bytes()),
+            &mut directory_candidates,
+        )
+        .unwrap();
+    assert!(directory_candidates.len() > 500);
+    let intact_refs: BTreeSet<_> = Salvage::new(&intact)
+        .find_candidates()
+        .candidates
+        .iter()
+        .map(|candidate| candidate.inode_ref)
+        .collect();
+    let surviving_refs: BTreeSet<_> = directory_candidates
+        .iter()
+        .map(|candidate| candidate.detail.inode_ref)
+        .collect();
+    assert_eq!(surviving_refs, intact_refs);
+    assert_eq!(
+        directory_adapter
+            .rebuild_tree(&*directory_source, &directory_candidates)
+            .unwrap()
+            .nodes
+            .len(),
+        directory_candidates.len()
+    );
+    let mut directory_findings = Vec::new();
+    directory_adapter
+        .report_damage(&*directory_source, &mut directory_findings)
+        .unwrap();
+    assert!(
+        directory_findings
+            .iter()
+            .any(|finding| finding.structure == "directory table"
+                && finding.location.offset == directory_at),
+        "{directory_findings:?}"
+    );
     let walk = intact.inode_table();
     let target = walk.block_at(b_ref >> 16).expect("b's block");
     assert_ne!(
@@ -78,6 +128,46 @@ fn salvage_finds_every_file_the_kernel_reaches_and_the_ones_it_cannot() {
     let by_ref: BTreeMap<u64, _> = scan.candidates.iter().map(|c| (c.inode_ref, c)).collect();
     let tree = salvage.rebuild_tree(&scan.candidates);
     let orphans: BTreeSet<u64> = tree.orphans().map(|n| n.inode_ref).collect();
+
+    let source = common::MemDev::arc(bytes.clone());
+    let shared = SquashfsVolume::open_for_salvage(source.clone()).unwrap();
+    let adapter = shared.adapter().unwrap();
+    let mut candidates = Vec::new();
+    adapter
+        .find_candidates(
+            &*source,
+            Extent::new(0, source.size_bytes()),
+            &mut candidates,
+        )
+        .unwrap();
+    assert_eq!(candidates.len(), scan.candidates.len());
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.detail.inode_ref)
+            .collect::<BTreeSet<_>>(),
+        scan.candidates
+            .iter()
+            .map(|candidate| candidate.inode_ref)
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        adapter
+            .rebuild_tree(&*source, &candidates)
+            .unwrap()
+            .nodes
+            .len(),
+        candidates.len()
+    );
+    let mut findings = Vec::new();
+    adapter.report_damage(&*source, &mut findings).unwrap();
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.structure == "inode table"
+                && finding.location.offset == target.offset),
+        "{findings:?}"
+    );
 
     // Every file whose own inode decodes is a candidate; those under b/
     // were found without any directory, and nothing places them.

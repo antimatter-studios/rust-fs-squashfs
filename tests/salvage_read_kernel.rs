@@ -10,7 +10,10 @@
 mod common;
 
 use common::{dir, file};
+use fs_core::layers::salvage::{Extent, SalvageAdapter};
+use fs_core::layers::{OpenVolume, PrimitiveAPI};
 use fs_squashfs::data::BlockSource;
+use fs_squashfs::layers::SquashfsVolume;
 use fs_squashfs::salvage::Salvage;
 use fs_squashfs::salvage_read::{MissingPolicy, RangeSource};
 use fs_squashfs::Volume;
@@ -87,6 +90,37 @@ fn a_materialized_file_holds_exactly_the_bytes_the_kernel_reads() {
             audit.damage.iter().any(|d| d.offset == at),
             "the audit misses the block at {at}: {:?}",
             audit.damage
+        );
+    }
+
+    let source = common::MemDev::arc(bytes.clone());
+    let shared = SquashfsVolume::open_for_salvage(source.clone()).unwrap();
+    let adapter = shared.adapter().unwrap();
+    let mut candidates = Vec::new();
+    adapter
+        .find_candidates(
+            &*source,
+            Extent::new(0, source.size_bytes()),
+            &mut candidates,
+        )
+        .unwrap();
+    assert_eq!(candidates.len(), scan.candidates.len());
+    assert_eq!(
+        adapter
+            .rebuild_tree(&*source, &candidates)
+            .unwrap()
+            .nodes
+            .len(),
+        candidates.len()
+    );
+    let mut findings = Vec::new();
+    adapter.report_damage(&*source, &mut findings).unwrap();
+    for (at, structure) in [(data_at, "data block"), (frag.start, "fragment block")] {
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.location.offset == at && finding.structure == structure),
+            "{findings:?}"
         );
     }
 
