@@ -43,9 +43,16 @@ chore_min_version: 0.6.0
 #                                                      downloads were 86 l /
 #                                                      3,922 B of it), then
 #                                                      ~13%. Was 312 l at 101
-#     images    138 l /   7,576 B    260 l / 18,000 B  the first --release tier
-#               112 tests                              in a job, so it pays the
-#                                                      cold build too
+#     images    303 l / 16,040 B     330 l / 18,000 B  measured on CI run
+#               (x86_64)                               44835273701 with the
+#                                                      three-layer tests (#242),
+#                                                      ~9%; aarch64 printed
+#                                                      300 l / 15,896 B. Was
+#                                                      138 l / 7,576 B at 112
+#                                                      tests, the first
+#                                                      --release tier in a job,
+#                                                      so it pays the cold
+#                                                      build too
 #     oracle    939 l /  92,793 B  1,150 l /115,000 B  --show-output keeps every
 #               111 tests                              tool call as evidence;
 #                                                      measured on CI run
@@ -441,7 +448,7 @@ tasks:
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:images images 260 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:images images 330 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
       # Measured 131 on 2026-11-02: all 129 baseline cases and two new
       # real-command listing tests over the committed reference image.
       - 'bash ../rust-fs-core/scripts/test-floor.sh images 131'
