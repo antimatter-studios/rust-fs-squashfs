@@ -832,7 +832,7 @@ impl SalvageAdapter for SquashfsAdapter {
         let volume = self.volume(source);
         let salvage = OurSalvage::new(&volume);
         let scan = salvage.find_candidates();
-        let audit = salvage.report_damage(&scan.candidates, false);
+        let audit = salvage.report_damage(&scan.candidates, true);
         let mut report = DamageReport::default();
         for d in &audit.damage {
             report.reported += 1;
