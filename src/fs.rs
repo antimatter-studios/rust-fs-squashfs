@@ -225,6 +225,7 @@ impl Filesystem {
     /// superblock, rejects unsupported compressors up front (every
     /// metadata read needs the codec), and loads the small id + fragment
     /// tables once.
+    #[deprecated(since = "0.5.0", note = "use OpenVolume::open")]
     pub fn open(dev: Arc<dyn BlockRead>) -> Result<Self> {
         Self::open_with_cache(dev, DEFAULT_CACHE_BLOCKS)
     }
@@ -426,12 +427,14 @@ impl Filesystem {
         exports.lookup(&*self.dev, &self.sb, inode_number, Some(&self.meta_cache))
     }
 
+    #[deprecated(since = "0.5.0", note = "use FileAPI::root")]
     pub fn root_inode(&self) -> Result<Inode> {
         self.read_inode(self.sb.root_inode_ref)
     }
 
     /// List a directory's entries (linear order; `.`/`..` are implicit and
     /// not returned).
+    #[deprecated(since = "0.5.0", note = "use FileAPI::read_dir")]
     pub fn read_dir(&self, inode: &Inode) -> Result<Vec<DirEntry>> {
         if !inode.is_dir() {
             return Err(Error::NotADirectory);
@@ -481,6 +484,7 @@ impl Filesystem {
     }
 
     /// Look up a single name in a directory (linear scan).
+    #[deprecated(since = "0.5.0", note = "use FileAPI::read_dir")]
     pub fn lookup(&self, dir: &Inode, name: &[u8]) -> Result<Inode> {
         for e in self.read_dir(dir)? {
             if e.name == name {
@@ -499,6 +503,7 @@ impl Filesystem {
     /// path and a poor way to REQUIRE one: see that method for why.
     ///
     /// [`lookup_path_bytes`]: Self::lookup_path_bytes
+    #[deprecated(since = "0.5.0", note = "use FileAPI::lookup")]
     pub fn lookup_path(&self, path: &str) -> Result<Inode> {
         self.lookup_path_bytes(path.as_bytes())
     }
@@ -523,6 +528,7 @@ impl Filesystem {
     ///
     /// [`DirEntry::name`]: crate::dir::DirEntry::name
     /// [`read_dir`]: Self::read_dir
+    #[deprecated(since = "0.5.0", note = "use FileAPI::lookup_bytes")]
     pub fn lookup_path_bytes(&self, path: &[u8]) -> Result<Inode> {
         let mut node = self.root_inode()?;
         for comp in path.split(|&b| b == b'/').filter(|c| !c.is_empty()) {
@@ -590,6 +596,7 @@ impl Filesystem {
     }
 
     /// A symlink's raw target bytes.
+    #[deprecated(since = "0.5.0", note = "use FileAPI::read_link")]
     pub fn read_symlink_target(&self, inode: &Inode) -> Result<Vec<u8>> {
         if !inode.is_symlink() {
             return Err(Error::BadInode("read_symlink_target on non-symlink"));
@@ -603,6 +610,7 @@ impl Filesystem {
     /// short return: a data block that decodes to less than its logical
     /// length is corruption, and comes back as an error rather than as
     /// fewer bytes.
+    #[deprecated(since = "0.5.0", note = "use FileAPI::read_at")]
     pub fn read_file(&self, inode: &Inode, offset: u64, buf: &mut [u8]) -> Result<usize> {
         self.read_file_with_offsets(inode, &self.block_offsets(inode), offset, buf)
     }

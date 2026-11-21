@@ -140,3 +140,6 @@ panic = "unwind"  # required for catch_unwind at the FFI boundary (see src/capi.
 [profile.dev]
 opt-level = 1
 panic = "unwind"
+
+[lints.rust]
+deprecated = "allow"

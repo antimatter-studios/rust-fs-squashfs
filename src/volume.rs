@@ -79,6 +79,7 @@ impl Volume<'static> {
     /// Fails only when the first 96 bytes cannot be read: a device shorter
     /// than a superblock, or one that refuses the read. Any value in those
     /// bytes, however wrong, opens; [`Volume::health`] says what is wrong.
+    #[deprecated(since = "0.5.0", note = "use OpenVolume::open_for_salvage")]
     pub fn open(dev: Arc<dyn BlockRead>) -> Result<Self> {
         let device_size = dev.size_bytes();
         if device_size < SUPERBLOCK_SIZE as u64 {
@@ -112,11 +113,13 @@ impl<'d> Volume<'d> {
     }
 
     /// The superblock as the bytes hold it, unjudged.
+    #[deprecated(since = "0.5.0", note = "use VolumeAPI::superblock")]
     pub fn superblock(&self) -> &Superblock {
         &self.sb
     }
 
     /// The size of the device the image is on, in bytes.
+    #[deprecated(since = "0.5.0", note = "use VolumeAPI::size_bytes")]
     pub fn device_size(&self) -> u64 {
         self.device_size
     }
@@ -136,6 +139,7 @@ impl<'d> Volume<'d> {
     ///
     /// The strict open is attempted to answer the second part, so this
     /// reads the lookup tables as well as the superblock.
+    #[deprecated(since = "0.5.0", note = "use VolumeAPI::health")]
     pub fn health(&self) -> VolumeHealth {
         VolumeHealth {
             superblock: self.superblock_faults(),
@@ -236,6 +240,7 @@ impl<'d> Volume<'d> {
     /// Reads `buf.len()` bytes from `offset`, or fewer when the device
     /// ends first; returns how many, and 0 at or past the end. A device
     /// that refuses the read is an error, never a short count.
+    #[deprecated(since = "0.5.0", note = "use VolumeAPI::read_volume_bytes")]
     pub fn read_raw(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if offset >= self.device_size {
             return Ok(0);

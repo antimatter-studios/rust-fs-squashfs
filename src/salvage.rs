@@ -238,6 +238,7 @@ impl<'v> Salvage<'v> {
     /// What this driver lacks: the deletion-specific features, which a
     /// read-only format has nothing for, and cluster steps, which it has
     /// no allocation units for.
+    #[deprecated(since = "0.5.0", note = "use SalvageAdapter::capabilities")]
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             missing: vec![
@@ -259,6 +260,7 @@ impl<'v> Salvage<'v> {
     /// Nothing here needs the superblock to be right beyond the table
     /// bounds and the block size: a candidate is any record that decodes,
     /// and the evidence says how it was found.
+    #[deprecated(since = "0.5.0", note = "use SalvageAdapter::find_candidates")]
     pub fn find_candidates(&self) -> CandidateScan {
         let sb = self.volume.superblock();
         let bs = self.block_size();
@@ -359,6 +361,7 @@ impl<'v> Salvage<'v> {
     /// listing that names a candidate, and each directory inode's own
     /// parent field. Nothing is resolved away: a candidate with no claim
     /// is an orphan, and one with several parents is a conflict.
+    #[deprecated(since = "0.5.0", note = "use SalvageAdapter::rebuild_tree")]
     pub fn rebuild_tree(&self, candidates: &[Candidate]) -> Tree {
         let mut tree = Tree::default();
         for c in candidates {

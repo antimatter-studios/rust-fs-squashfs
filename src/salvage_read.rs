@@ -173,6 +173,7 @@ impl Salvage<'_> {
     /// [`Salvage::materialize`]'s and [`Salvage::report_damage`]'s
     /// question. Any other candidate has no storage, and walks complete
     /// and empty.
+    #[deprecated(since = "0.5.0", note = "use SalvageAdapter::walk_extents")]
     pub fn walk_extents(&self, candidate: &Candidate) -> ExtentWalk {
         let mut walk = ExtentWalk {
             blocks: Vec::new(),
@@ -200,6 +201,7 @@ impl Salvage<'_> {
 
     /// Read source bytes inside `extent`, from `offset` into it: as many
     /// as fit in `buf` and the extent, and as the device holds.
+    #[deprecated(since = "0.5.0", note = "use SalvageAdapter::read_extent")]
     pub fn read_extent(&self, extent: Extent, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if offset >= extent.length {
             return Ok(0);
@@ -216,6 +218,7 @@ impl Salvage<'_> {
     /// listings cut short. With `check_data`, every data and fragment
     /// block of every file candidate is decoded too, which reads the
     /// whole image.
+    #[deprecated(since = "0.5.0", note = "use SalvageAdapter::report_damage")]
     pub fn report_damage(&self, candidates: &[Candidate], check_data: bool) -> DamageReport {
         let volume = self.volume();
         let mut report = DamageReport {
@@ -302,6 +305,7 @@ impl Salvage<'_> {
     /// report names the range. Only a sparse block is zeros by the
     /// format's own record. The source is only read; the sink must not be
     /// the device the image is on.
+    #[deprecated(since = "0.5.0", note = "use SalvageAdapter::materialize")]
     pub fn materialize(
         &self,
         candidate: &Candidate,
