@@ -3688,7 +3688,11 @@ fn rust_fs_core_is_an_exact_crates_io_version_with_a_local_patch_kept_out_of_git
             !line.contains("path") && !line.contains("git"),
             "{manifest}: rust-fs-core is pinned by path or git ({line}); pin it by version only"
         );
-        let spec = quoted_value_after(line, "rust-fs-core").unwrap_or_default();
+        // Bare (`rust-fs-core = "=X.Y.Z"`) or a table that names features
+        // (`rust-fs-core = { version = "=X.Y.Z", features = [...] }`).
+        let spec = quoted_value_after(line, "rust-fs-core")
+            .or_else(|| quoted_value_after(line, "version"))
+            .unwrap_or_default();
         assert!(
             spec.starts_with('=') && as_version(&spec[1..]).is_some(),
             "{manifest}: rust-fs-core is {spec:?}, not an exact `=X.Y.Z`"

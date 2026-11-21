@@ -71,7 +71,11 @@ cli = ["dep:clap", "rust-fs-core/cli"]
 #
 # The exact version agrees with FS_CORE_REF in chores.yml and release.yml,
 # and with fuzz/Cargo.toml and fuzz.yml; tests/ci_profile.rs fails if not.
-rust-fs-core = "=0.4.3"
+rust-fs-core = { version = "=0.5.1", features = ["layers"] }
+# Serialization of the salvage evidence the shared layers exchange: the
+# candidate detail this crate defines. The same crate and features
+# rust-fs-core's `layers` uses. MIT/Apache-2.0.
+serde = { version = "1", features = ["derive"] }
 # LZO1X codec (compression id 3). Extracted from this crate into its own
 # published crate so the Btrfs driver can share it rather than each
 # carrying a copy — the decoder is identical and the format is not

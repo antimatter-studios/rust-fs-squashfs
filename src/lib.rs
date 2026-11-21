@@ -24,6 +24,8 @@
 //! Independent clean-room implementation.
 //!
 //! Layout of the reader, by layer (see `docs/three-layers.md`):
+//! - [`layers`] — rust-fs-core's three API layers (`VolumeAPI`, `PrimitiveAPI`
+//!   with the salvage verbs, `FileAPI`) over the crate's own
 //! - [`volume`] — the volume layer: an image opened on its superblock
 //!   alone, its health, and its raw bytes, however damaged the rest is
 //! - [`salvage`] — the family's recovery verbs in SquashFS terms: candidates,
@@ -61,6 +63,7 @@ pub mod error;
 pub mod fs;
 pub mod indirect;
 pub mod inode;
+pub mod layers;
 pub mod metablock;
 pub mod metatable;
 pub mod records;

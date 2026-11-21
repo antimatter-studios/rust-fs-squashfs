@@ -24,6 +24,8 @@ checks it. Every pull request that changes behaviour updates it.
 
 ## Crate layout
 
+- `layers` — rust-fs-core's three API layers over the crate: `SquashfsVolume` and
+  `SquashfsAdapter`
 - `volume` — the volume layer: an image opened on its superblock alone, its
   health and its raw bytes, however damaged the rest is
 - `salvage` — the recovery verbs in SquashFS terms: candidates found three ways,
