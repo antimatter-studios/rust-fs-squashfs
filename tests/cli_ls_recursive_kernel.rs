@@ -1,8 +1,11 @@
 //! Recursive paths, types, sizes and identities checked against GNU find
 //! on Linux's mount of a reference-made image, inside the harness guest.
 mod cli_support;
+#[path = "common/mod.rs"]
+mod common;
 
 use cli_support::*;
+use common::{assert_images_equal, read_image_range, snapshot_image, write_image_range};
 use fs_squashfs::{Filesystem, Inode};
 use fs_squashfs_test_support::{guest_kernel_read, mksquashfs_from_guest_tree, ScratchDir};
 use std::collections::BTreeMap;
@@ -77,7 +80,7 @@ printf raw > $'a/deep/raw-\xff'
 
     // Mutate only the reference image's uncompressed basic directory
     // inodes. These faults exercise CLI termination, not format validity.
-    let bytes = std::fs::read(&image).unwrap();
+    let before = snapshot_image(&image);
     let fs = Filesystem::open(std::sync::Arc::new(
         fs_core::FileDevice::open(&image).unwrap(),
     ))
@@ -92,7 +95,11 @@ printf raw > $'a/deep/raw-\xff'
     let inode_at = |reference: u64| {
         let block = fs.sb.inode_table_start as usize + (reference >> 16) as usize;
         assert_ne!(
-            u16::from_le_bytes(bytes[block..block + 2].try_into().unwrap()) & 0x8000,
+            u16::from_le_bytes(
+                read_image_range(&image, block as u64, 2)
+                    .try_into()
+                    .unwrap()
+            ) & 0x8000,
             0
         );
         block + 2 + (reference & 0xffff) as usize
@@ -102,20 +109,29 @@ printf raw > $'a/deep/raw-\xff'
     let node: Inode = fs.read_inode(child.inode_ref).unwrap();
     assert_eq!((root.inode_type, node.inode_type), (1, 1));
     for fault in ["identity", "cycle", "unreadable"] {
-        let mut damaged = bytes.clone();
-        match fault {
-            "identity" => damaged[child_at + 12..child_at + 16]
-                .copy_from_slice(&root.inode_number.to_le_bytes()),
-            "cycle" => {
-                damaged[child_at + 16..child_at + 20]
-                    .copy_from_slice(&bytes[root_at + 16..root_at + 20]);
-                damaged[child_at + 24..child_at + 28]
-                    .copy_from_slice(&bytes[root_at + 24..root_at + 28]);
-            }
-            _ => damaged[child_at + 16..child_at + 20].copy_from_slice(&u32::MAX.to_le_bytes()),
-        }
         let bad = dir.join(&format!("{fault}.sqfs"));
-        std::fs::write(&bad, &damaged).unwrap();
+        std::fs::copy(&image, &bad).unwrap();
+        match fault {
+            "identity" => write_image_range(
+                &bad,
+                (child_at + 12) as u64,
+                &root.inode_number.to_le_bytes(),
+            ),
+            "cycle" => {
+                write_image_range(
+                    &bad,
+                    (child_at + 16) as u64,
+                    &read_image_range(&image, (root_at + 16) as u64, 4),
+                );
+                write_image_range(
+                    &bad,
+                    (child_at + 24) as u64,
+                    &read_image_range(&image, (root_at + 24) as u64, 4),
+                );
+            }
+            _ => write_image_range(&bad, (child_at + 16) as u64, &u32::MAX.to_le_bytes()),
+        }
+        let before_walk = snapshot_image(&bad);
         let out = tool("fs.squashfs")
             .arg(&bad)
             .args(["ls", "-R", "--limit", "30", "--max-depth", "10", "/"])
@@ -131,11 +147,7 @@ printf raw > $'a/deep/raw-\xff'
             assert!(stdout(&out).contains("\"revisited\": true"));
             assert!(!stdout(&out).contains("/a/deep"));
         }
-        assert_eq!(
-            std::fs::read(&bad).unwrap(),
-            damaged,
-            "the walk is read-only"
-        );
+        assert_images_equal(&bad, &before_walk);
     }
-    assert_eq!(std::fs::read(&image).unwrap(), bytes);
+    assert_images_equal(&image, &before);
 }

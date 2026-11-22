@@ -1,14 +1,18 @@
 //! Shared bounded exports checked against unsquashfs and the Linux kernel.
 
 mod cli_support;
+#[path = "common/mod.rs"]
+mod common;
 
 use cli_support::*;
+use common::{append_image_with_prefix, assert_images_equal, snapshot_image};
 use fs_core::FileDevice;
 use fs_squashfs::Filesystem;
 use fs_squashfs_test_support::{
     assert_unsquashfs_walks, guest_kernel_report, mksquashfs_from_guest_tree, oracle, sha256_hex,
     ScratchDir,
 };
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -48,7 +52,7 @@ fn export_matches_kernel_and_unsquashfs_with_shared_publication_rules() {
     for comp in ["gzip", "xz", "lz4", "zstd", "lzo"] {
         let dir = ScratchDir::new(&format!("cli-export-{comp}"));
         let image = image(&dir, comp);
-        let before = std::fs::read(&image).unwrap();
+        let before = snapshot_image(&image);
         let kernel = guest_kernel_report(image.to_str().unwrap(), "export source");
         for (name, size) in [("empty", 0), ("big", 3_145_729)] {
             let want = kernel
@@ -119,9 +123,7 @@ fn export_matches_kernel_and_unsquashfs_with_shared_publication_rules() {
         assert!(help.contains("Examples:"), "{help}");
         assert!(help.contains("fs.squashfs rootfs.sqfs export"), "{help}");
         let embedded = dir.join("embedded");
-        let mut bytes = vec![0; 4096];
-        bytes.extend_from_slice(&before);
-        std::fs::write(&embedded, bytes).unwrap();
+        append_image_with_prefix(&image, &embedded, 4096);
         let out = ok(tool("fs.squashfs")
             .arg(&embedded)
             .args(["--offset", "4096", "export", "/big", "-"]));
@@ -129,11 +131,7 @@ fn export_matches_kernel_and_unsquashfs_with_shared_publication_rules() {
             &sha256_hex(&out.stdout),
             kernel.get(&("sha256".into(), "big".into())).unwrap()
         );
-        assert_eq!(
-            std::fs::read(&image).unwrap(),
-            before,
-            "export changed its source"
-        );
+        assert_images_equal(&image, &before);
     }
 }
 
@@ -153,9 +151,14 @@ fn unreadable_export_never_publishes_or_replaces_and_cleans_staging() {
             .iter()
             .map(|size| (size & 0x00ff_ffff) as usize)
             .sum::<usize>();
-    let mut bytes = std::fs::read(&image).unwrap();
-    bytes[at..at + (size & 0x00ff_ffff) as usize].fill(0);
-    std::fs::write(&image, bytes).unwrap();
+    let mut bytes = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&image)
+        .unwrap();
+    bytes.seek(std::io::SeekFrom::Start(at as u64)).unwrap();
+    bytes
+        .write_all(&vec![0; (size & 0x00ff_ffff) as usize])
+        .unwrap();
     let reference = oracle("unsquashfs")
         .args(["-cat", image.to_str().unwrap(), "big"])
         .output();

@@ -12,8 +12,11 @@
 //! alone, without publishing or replacing anything.
 
 mod cli_support;
+#[path = "common/mod.rs"]
+mod common;
 
 use cli_support::*;
+use common::{append_image_with_prefix, assert_images_equal, snapshot_image};
 use fs_core::FileDevice;
 use fs_squashfs::Filesystem;
 use fs_squashfs_test_support::{
@@ -159,7 +162,7 @@ fn recursive_export_matches_the_kernel_and_unsquashfs_and_a_damaged_file_fails_a
     let dir = ScratchDir::new("cli-export-tree");
     let image = dir.join("source.sqfs");
     build(&image, DEEP_STAGE);
-    let before = std::fs::read(&image).unwrap();
+    let before = snapshot_image(&image);
     let kernel = guest_kernel_report(image.to_str().unwrap(), "tree export reference");
     assert_eq!(
         kernel
@@ -259,11 +262,7 @@ fn recursive_export_matches_the_kernel_and_unsquashfs_and_a_damaged_file_fails_a
     let mut want = kernel.clone();
     want.remove(&("type".to_string(), "tree/pipe".to_string()));
     assert_eq!(exported_rows(&linked), want, "{report}");
-    assert_eq!(
-        std::fs::read(&image).unwrap(),
-        before,
-        "export changed its source"
-    );
+    assert_images_equal(&image, &before);
 
     // A damaged data block in `big`, past the first transfer chunk: `big`
     // fails, and everything beside it is still exported.
@@ -278,9 +277,8 @@ fn recursive_export_matches_the_kernel_and_unsquashfs_and_a_damaged_file_fails_a
             .iter()
             .map(|size| (size & 0x00ff_ffff) as usize)
             .sum::<usize>();
-    let mut bytes = before.clone();
-    bytes[at..at + (size & 0x00ff_ffff) as usize].fill(0);
-    std::fs::write(&damaged, bytes).unwrap();
+    std::fs::copy(&before, &damaged).unwrap();
+    common::write_image_range(&damaged, at as u64, &vec![0; (size & 0x00ff_ffff) as usize]);
     let reference = oracle("unsquashfs")
         .args(["-cat", damaged.to_str().unwrap(), "tree/big"])
         .output();
@@ -358,7 +356,7 @@ PY
     let dir = ScratchDir::new("cli-export-tree-preserve");
     let image = dir.join("source.sqfs");
     build(&image, STAGE);
-    let before = std::fs::read(&image).unwrap();
+    let before = snapshot_image(&image);
     let kernel = guest_kernel_read(image.to_str().unwrap(), REPORT);
     assert!(
         kernel.status.success(),
@@ -448,11 +446,7 @@ PY
             assert_eq!(std::fs::read(&local).unwrap(), b"linked content\n");
         }
     }
-    assert_eq!(
-        std::fs::read(&image).unwrap(),
-        before,
-        "export changed its source"
-    );
+    assert_images_equal(&image, &before);
 }
 
 /// Below `/tree`: `file` and `sub` at depth 1, `sub/file` and `sub/a` at 2,
@@ -468,7 +462,7 @@ fn recursive_export_bounds_merges_replaces_and_honours_the_offset() {
     let dir = ScratchDir::new("cli-export-tree-policy");
     let image = dir.join("source.sqfs");
     build(&image, POLICY_STAGE);
-    let before = std::fs::read(&image).unwrap();
+    let before = snapshot_image(&image);
     let kernel = guest_kernel_report(image.to_str().unwrap(), "tree export policy reference");
     let assert_files = |root: &Path, names: &[&str]| {
         for name in names {
@@ -577,9 +571,7 @@ fn recursive_export_bounds_merges_replaces_and_honours_the_offset() {
 
     // An image at an offset exports the same tree only through --offset.
     let embedded = dir.join("embedded");
-    let mut shifted_bytes = vec![0; 4096];
-    shifted_bytes.extend_from_slice(&before);
-    std::fs::write(&embedded, shifted_bytes).unwrap();
+    append_image_with_prefix(&image, &embedded, 4096);
     let unshifted = dir.join("unshifted");
     let out = export_tree(&embedded, &[], &[], &unshifted);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -590,9 +582,5 @@ fn recursive_export_bounds_merges_replaces_and_honours_the_offset() {
     assert_eq!(out.status.code(), Some(0), "{report}{}", stderr(&out));
     assert_eq!(json_field(&report, "completed"), "7", "{report}");
     assert_files(&shifted, &POLICY_FILES);
-    assert_eq!(
-        std::fs::read(&image).unwrap(),
-        before,
-        "export changed its source"
-    );
+    assert_images_equal(&image, &before);
 }
