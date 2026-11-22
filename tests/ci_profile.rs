@@ -1445,10 +1445,10 @@ fn the_pr_gate_builds_fixtures_once_in_the_harness_vm_and_tests_both_architectur
         commands.iter().any(|c| {
             let as_cargo = c.replace(TEST_WRAPPER, "cargo test");
             as_cargo.contains("cargo test")
-                && as_cargo.contains("--release")
+                && as_cargo.contains("--profile test-opt")
                 && as_cargo.contains("test-targets.sh all")
         }),
-        "chores.yml `test:native` must run the whole suite in the release profile, \
+        "chores.yml `test:native` must run the whole suite in the test-opt profile, \
          selected with `scripts/test-targets.sh all`; it runs {commands:?}"
     );
     assert!(
@@ -3738,4 +3738,20 @@ fn rust_fs_core_is_an_exact_crates_io_version_with_a_local_patch_kept_out_of_git
         ignore.lines().any(|l| l.trim() == "/.cargo/config.toml"),
         ".gitignore must keep a local `.cargo/config.toml` [patch] out of the tree"
     );
+}
+
+#[test]
+fn optimized_test_profile_disables_lto() {
+    let manifest = include_str!("../Cargo.toml");
+    let profile = manifest
+        .split("[profile.test-opt]")
+        .nth(1)
+        .expect("test-opt profile missing")
+        .split('[')
+        .next()
+        .unwrap();
+    let settings: Vec<_> = profile.lines().map(str::trim).collect();
+    assert!(settings.contains(&"inherits = \"release\""));
+    assert!(settings.contains(&"lto = false"));
+    assert!(settings.contains(&"codegen-units = 16"));
 }
