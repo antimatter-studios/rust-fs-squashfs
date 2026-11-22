@@ -3755,3 +3755,17 @@ fn optimized_test_profile_disables_lto() {
     assert!(settings.contains(&"lto = false"));
     assert!(settings.contains(&"codegen-units = 16"));
 }
+
+#[test]
+fn every_optimized_test_tier_uses_the_lto_free_profile() {
+    let chores = include_str!("../chores.yml");
+    assert_eq!(
+        chores.matches("--profile test-opt").count(),
+        4,
+        "images, oracle, kernel, and whole-suite tiers must use test-opt"
+    );
+    assert!(
+        !chores.contains("scripts/test.sh --locked --release"),
+        "test tiers must not select the release profile"
+    );
+}
