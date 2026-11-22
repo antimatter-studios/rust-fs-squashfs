@@ -454,7 +454,7 @@ tasks:
   test:images:
     desc: 'The tests that read a committed fixture but need no VM — what a host without KVM can still run'
     cmds:
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:images images 330 18000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh images)'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:images images 330 18000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh images)'
       # Measured 131 on 2026-11-02: all 129 baseline cases and two new
       # real-command listing tests over the committed reference image.
       - 'bash ../rust-fs-core/scripts/test-floor.sh images 131'
@@ -470,7 +470,7 @@ tasks:
     # `after_all` reaper is the net for a boot that never finished.
     cmds:
       - scripts/tools.sh --check
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 1150 115000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:oracle oracle 1150 115000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh oracle) -- --show-output'
       # 98: the 88 before, plus tests/cli_fs_oracle.rs's ten -- the tool
       # held to unsquashfs on every compressor and layout. A floor only goes up.
       - 'bash ../rust-fs-core/scripts/test-floor.sh oracle 98'
@@ -484,7 +484,7 @@ tasks:
     # corruption the kernel has to refuse.
     cmds:
       - scripts/tools.sh --check
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 450 40000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh kernel) -- --show-output'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:kernel kernel 450 40000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh kernel) -- --show-output'
       # Xattr listing and every value add one guest-kernel case to the previous floor.
       # cli_export_kernel.rs adds two cases against Linux and unsquashfs.
       # cli_export_tree_kernel.rs adds three, the recursive export (#195).
@@ -554,7 +554,7 @@ tasks:
       - task: test:images
       - task: test:oracle
       - task: test:kernel
-      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 850 45000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh all)'
+      - 'bash ../rust-fs-core/scripts/tier.sh --refuse-ignored "test:native (whole suite, release)" suite 850 45000 -- scripts/test.sh --locked --profile test-opt $(scripts/test-targets.sh all)'
       # 332 executed on 2026-09-28, for the same reason as unit's.
       # Raised from 295 with that measurement.
       # Xattr inspection adds one kernel case to the previous floor.
