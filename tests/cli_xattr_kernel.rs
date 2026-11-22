@@ -2,8 +2,11 @@
 //! Hex transport preserves invalid UTF-8, NUL values and empty values.
 
 mod cli_support;
+#[path = "common/mod.rs"]
+mod common;
 
 use cli_support::*;
+use common::{append_image_with_prefix, assert_images_equal, snapshot_image};
 use fs_squashfs_test_support::{guest_kernel_read, mksquashfs_from_guest_tree, ScratchDir};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
@@ -76,7 +79,7 @@ fn xattr_names_and_values_match_the_kernel_in_every_namespace() {
             ],
         );
         assert!(built.status.success(), "mksquashfs: {}", stderr(&built));
-        let before = std::fs::read(&image).unwrap();
+        let before = snapshot_image(&image);
         let report = guest_kernel_read(image.to_str().unwrap(), REPORT);
         assert!(report.status.success(), "kernel: {}", stderr(&report));
         assert_eq!(stdout(&report).lines().count(), 7);
@@ -126,9 +129,7 @@ fn xattr_names_and_values_match_the_kernel_in_every_namespace() {
             assert_eq!(stdout(&out).trim_end(), text.join("\n"));
         }
         let embedded = dir.join("embedded");
-        let mut bytes = vec![0; 4096];
-        bytes.extend_from_slice(&before);
-        std::fs::write(&embedded, bytes).unwrap();
+        append_image_with_prefix(&image, &embedded, 4096);
         let out = ok(tool("fs.squashfs").arg(&embedded).args([
             "--offset",
             "4096",
@@ -137,6 +138,6 @@ fn xattr_names_and_values_match_the_kernel_in_every_namespace() {
             "user.comment",
         ]));
         assert_eq!(out.stdout, b"hello\0\xff\n");
-        assert_eq!(std::fs::read(&image).unwrap(), before);
+        assert_images_equal(&image, &before);
     }
 }

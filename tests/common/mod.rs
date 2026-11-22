@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +21,97 @@ use fs_squashfs::Filesystem;
 // the fs-linux-test-harness guest, and this crate fails rather than skips
 // when they cannot be reached.
 use fs_squashfs_test_support::{guest_quote, oracle, ScratchDir};
+
+const IMAGE_COMPARE_CHUNK: usize = 1024 * 1024;
+static SNAPSHOT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Make a sparse, bounded-memory snapshot of a potentially large image.
+pub fn snapshot_image(path: &Path) -> PathBuf {
+    let id = SNAPSHOT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let snapshot = path.with_extension(format!("snapshot-{}-{id}", std::process::id()));
+    let mut input = std::fs::File::open(path).expect("open image for snapshot");
+    let mut output = std::fs::File::create(&snapshot).expect("create sparse image snapshot");
+    let len = input.metadata().expect("stat image").len();
+    let mut offset = 0;
+    let mut chunk = vec![0; IMAGE_COMPARE_CHUNK];
+    loop {
+        let read = input.read(&mut chunk).expect("read image snapshot chunk");
+        if read == 0 {
+            break;
+        }
+        if chunk[..read].iter().any(|byte| *byte != 0) {
+            output
+                .seek(SeekFrom::Start(offset))
+                .expect("seek sparse snapshot");
+            output
+                .write_all(&chunk[..read])
+                .expect("write sparse snapshot");
+        }
+        offset += read as u64;
+    }
+    output.set_len(len).expect("set sparse snapshot length");
+    snapshot
+}
+
+/// Assert two files match using at most 1 MiB per file and report first offset.
+pub fn assert_images_equal(left: &Path, right: &Path) {
+    let mut left_file = std::fs::File::open(left).expect("open image");
+    let mut right_file = std::fs::File::open(right).expect("open image snapshot");
+    let left_len = left_file.metadata().expect("stat image").len();
+    let right_len = right_file.metadata().expect("stat image snapshot").len();
+    assert_eq!(
+        left_len, right_len,
+        "image lengths differ: {left_len} != {right_len}"
+    );
+    let mut a = vec![0; IMAGE_COMPARE_CHUNK];
+    let mut b = vec![0; IMAGE_COMPARE_CHUNK];
+    let mut offset = 0u64;
+    loop {
+        let n = left_file.read(&mut a).expect("read image chunk");
+        let m = right_file.read(&mut b).expect("read image snapshot chunk");
+        assert_eq!(n, m, "image lengths differ at offset {offset}");
+        if n == 0 {
+            break;
+        }
+        if let Some(index) = a[..n].iter().zip(&b[..n]).position(|(x, y)| x != y) {
+            panic!("images differ at offset {}", offset + index as u64);
+        }
+        offset += n as u64;
+    }
+}
+
+/// Append an image to a destination after a zero-filled prefix without buffering it.
+pub fn append_image_with_prefix(image: &Path, destination: &Path, prefix: u64) {
+    let mut output = std::fs::File::create(destination).expect("create embedded image");
+    output.set_len(prefix).expect("reserve embedded prefix");
+    output
+        .seek(SeekFrom::Start(prefix))
+        .expect("seek embedded image");
+    std::io::copy(
+        &mut std::fs::File::open(image).expect("open image"),
+        &mut output,
+    )
+    .expect("copy image into embedded image");
+}
+
+pub fn read_image_range(path: &Path, offset: u64, len: usize) -> Vec<u8> {
+    let mut file = std::fs::File::open(path).expect("open image");
+    file.seek(SeekFrom::Start(offset))
+        .expect("seek image range");
+    let mut bytes = vec![0; len];
+    file.read_exact(&mut bytes).expect("read image range");
+    bytes
+}
+
+pub fn write_image_range(path: &Path, offset: u64, bytes: &[u8]) {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open image for update");
+    file.seek(SeekFrom::Start(offset))
+        .expect("seek image update");
+    file.write_all(bytes).expect("write image range");
+}
 
 /// In-memory `BlockRead` impl backed by a `Vec<u8>`. Owned via
 /// `Mutex<Vec<u8>>` so the device is `Send + Sync`.
