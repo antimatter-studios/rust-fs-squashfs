@@ -338,6 +338,7 @@ tasks:
     # nothing, and stores the empty-set hash — the task then never registers
     # as up to date. Measured 2026-08-27 against chore 0.6.0.
     sources:
+      - chores.yml
       - Cargo.toml
       - 'src/**/*.rs'
       - 'include/*.h'
