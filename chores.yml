@@ -141,9 +141,10 @@ chore_min_version: 0.6.0
 #                                                      passes, so a new one is a
 #                                                      visible step. Was 11 l /
 #                                                      431 B before the docs
-#     scripts     6 l /     142 B     30 l /  2,000 B  two shell guards today,
-#                                                      and the glob takes the
-#                                                      next one
+#     scripts    32 l /   1,364 B     40 l /  2,000 B  measured on CI run
+#                                                      45076977700 with the
+#                                                      image-read guard (#250);
+#                                                      25% line headroom
 #
 #   A COLD BUILD ADDS 61 `Compiling` LINES, measured by `cargo clean` then the
 #   suite tier. It lands on whichever tier runs FIRST in a job, and on BOTH
@@ -611,7 +612,7 @@ tasks:
     cmds:
       - |
         set -eu
-        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:scripts scripts 30 2000 -- bash -c '
+        bash ../rust-fs-core/scripts/tier.sh --refuse-ignored test:scripts scripts 40 2000 -- bash -c '
           set -eu
           for t in tests/scripts/*.sh; do
             echo "== $t"
