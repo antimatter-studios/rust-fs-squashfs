@@ -70,6 +70,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CHORE_VERSION: "0.11.0"
+  FLTH_RESOURCE_PROFILE: low
   # Declare profile-conditional jobs to core's static ci-gate contract.
   # This permits their scheduling conditions only: ci-ok still needs every
   # job and rejects failures, cancellations and skips not allowed by the plan.
@@ -276,7 +277,7 @@ jobs:
         # Ubuntu 24.04 packages virtiofsd 1.10.0, which never answers a
         # non-UTF-8 xattr name (fs-linux-test-harness #274). The tag must
         # match LINUX_HARNESS_REF in chores.yml.
-        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.9.1
+        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.11.0
       - name: KVM, QEMU and Vagrant
         id: vm-host
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
@@ -415,7 +416,7 @@ jobs:
         # Ubuntu 24.04 packages virtiofsd 1.10.0, which never answers a
         # non-UTF-8 xattr name (fs-linux-test-harness #274). The tag must
         # match LINUX_HARNESS_REF in chores.yml.
-        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.9.1
+        uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@v0.11.0
       - name: KVM, QEMU and Vagrant
         id: vm-host
         run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
