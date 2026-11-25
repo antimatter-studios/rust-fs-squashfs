@@ -365,6 +365,17 @@ fn no_test_drives_the_vm_or_mounts_a_filesystem_itself() {
 }
 
 #[test]
+fn every_mksquashfs_entry_point_caps_formatter_workers() {
+    let source = std::fs::read_to_string(manifest_dir().join("tests/support/src/oracle.rs"))
+        .expect("read the oracle support source");
+    assert!(source.contains("const MKSQUASHFS_PROCESSOR_LIMIT: &str = \" -processors 1\";"));
+    assert!(source.contains("line.push_str(MKSQUASHFS_PROCESSOR_LIMIT);"));
+    assert!(source.contains("flock -x {} {line}"));
+    assert!(source.contains("flock -x {lock} mksquashfs"));
+    assert!(source.contains("processors = MKSQUASHFS_PROCESSOR_LIMIT,"));
+}
+
+#[test]
 fn no_test_spawns_a_program_it_named_in_a_variable() {
     let mut offenders = Vec::new();
     for (path, text) in all_test_sources() {

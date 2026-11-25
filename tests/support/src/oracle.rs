@@ -222,6 +222,9 @@ pub fn oracle(tool: &str) -> Oracle {
     }
 }
 
+const MKSQUASHFS_LOCK: &str = "/tmp/rust-fs-squashfs-mksquashfs.lock";
+const MKSQUASHFS_PROCESSOR_LIMIT: &str = " -processors 1";
+
 /// One argument, as the guest will receive it.
 enum Arg {
     Text(String),
@@ -374,6 +377,12 @@ impl Oracle {
         for argument in &self.args {
             line.push(' ');
             line.push_str(&argument.shell());
+        }
+        if self.tool == "mksquashfs" {
+            // Keep each test's formatter bounded while leaving test-level
+            // concurrency intact for race coverage.
+            line.push_str(MKSQUASHFS_PROCESSOR_LIMIT);
+            line = format!("flock -x {} {line}", guest_quote(MKSQUASHFS_LOCK));
         }
         let redirect = format!(
             "> {} 2> {}",
@@ -560,7 +569,7 @@ stage_status=0
 {{
     cd "$SRC"
     if SRC="$SRC" bash -euo pipefail -c {stage}; then
-        mksquashfs "$SRC" {out}{argv}
+        flock -x {lock} mksquashfs "$SRC" {out}{argv}{processors}
     else
         stage_status=$?
     fi
@@ -570,8 +579,10 @@ printf %s "$stage_status" > {stage_status}
 printf %s "$status" > {status}"#,
         dir = guest_quote(&run.dir.to_string_lossy()),
         out = guest_quote(&out.to_string_lossy()),
+        lock = guest_quote(MKSQUASHFS_LOCK),
         stage = guest_quote(stage),
         argv = argv,
+        processors = MKSQUASHFS_PROCESSOR_LIMIT,
         stdout = guest_quote(&run.stdout.to_string_lossy()),
         stderr = guest_quote(&run.stderr.to_string_lossy()),
         status = guest_quote(&run.status.to_string_lossy()),
